@@ -1,0 +1,25 @@
+[package]
+name = "signalr_rs"
+version = "0.1.0"
+authors = ["Guillaume Balaine <igosuki@gmail.com>"]
+edition = "2018"
+description = "SignalR client based on actix web client and async await"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[[example]]
+name = "bittrex_signalr"
+path = "examples/bittrex.rs.rs"
+
+[dependencies]
+awc = "1.0.1"
+actix-web = { version ="2.0.0", features = ["openssl"] }
+actix = "0.9.0"
+serde_json = "1.0.0"
+serde = "1.0.104"
+serde_derive = "1.0.104"
+failure = "0.1.6"
+url = "2.1.0"
+actix-codec = "0.2.0"
+futures = "0.3.1"
+openssl = "0.10.26"
+bytes = "0.5.3"
