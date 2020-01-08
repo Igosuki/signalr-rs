@@ -28,11 +28,11 @@ fn main() -> io::Result<()> {
 
     Arbiter::spawn(async {
         let handler = Box::new(BittrexHandler{});
-        let client = HubClient::new("https://socket.bittrex.com/signalr", handler).await;
+        let client = HubClient::new("c2", "https://socket.bittrex.com/signalr/", handler).await;
         match client {
             Ok(addr) => (),
             Err(e) => {
-                println!("Websocket client error : {:?}", e);
+                println!("Hub client error : {:?}", e);
                 System::current().stop();
             }
         }

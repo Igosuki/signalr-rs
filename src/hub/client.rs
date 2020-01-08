@@ -5,24 +5,37 @@ use std::ops::Deref;
 use std::option::NoneError;
 use awc::{BoxedSocket, Client};
 use awc::ws::{Codec, Frame, Message};
-use url::{Url, ParseError};
+use url::{form_urlencoded::{self, byte_serialize, parse}, Url, ParseError};
 use actix_codec::Framed;
 use std::io;
 use futures::stream::{SplitSink, StreamExt};
-use awc::error::{WsProtocolError, WsClientError};
+use awc::error::{WsProtocolError, WsClientError, SendRequestError};
 use actix::{StreamHandler, Context, Actor, Addr};
 use bytes::{Buf, Bytes};
 use std::time::{Duration, Instant};
 use actix::io::SinkWrite;
+use actix_web::HttpMessage;
+use awc::cookie::Cookie;
+use serde::{Serialize, Deserialize};
+use actix_http::cookie::{ParseError as CookieParseError};
+use actix_http::error::PayloadError;
 
 #[derive(Debug, Fail)]
-enum HubClientError {
+pub enum HubClientError {
     #[fail(display = "invalid data : {:?}", data)]
     InvalidData { data: Vec<String> },
     #[fail(display = "missing key")]
     MissingData,
-    #[fail(display = "invalid json data")]
-    ParseError,
+    #[fail(display = "invalid json data {}", 0)]
+    ParseError(serde_json::Error),
+    #[fail(display = "send request error {:?}", 0)]
+    RequestError(String),
+    #[fail(display = "cookie error {:?}", 0)]
+    CookieParseError(String),
+    #[fail(display = "payload error {:?}", 0)]
+    PayloadError(String),
+    #[fail(display = "ws client error {:?}", 0)]
+    WsClientError(String)
 }
 
 impl From<NoneError> for HubClientError {
@@ -32,8 +45,32 @@ impl From<NoneError> for HubClientError {
 }
 
 impl From<serde_json::Error> for HubClientError {
-    fn from(_: serde_json::Error) -> Self {
-        HubClientError::ParseError
+    fn from(e: serde_json::Error) -> Self {
+        HubClientError::ParseError(e)
+    }
+}
+
+impl From<SendRequestError> for HubClientError {
+    fn from(e: SendRequestError) -> Self {
+        HubClientError::RequestError(format!("{}", e))
+    }
+}
+
+impl From<CookieParseError> for HubClientError {
+    fn from(e: CookieParseError) -> Self {
+        HubClientError::CookieParseError(format!("{}", e))
+    }
+}
+
+impl From<PayloadError> for HubClientError {
+    fn from(e: PayloadError) -> Self {
+        HubClientError::PayloadError(format!("{}", e))
+    }
+}
+
+impl From<WsClientError> for HubClientError {
+    fn from(e: WsClientError) -> Self {
+        HubClientError::WsClientError(format!("{}", e))
     }
 }
 
@@ -59,10 +96,64 @@ impl Actor for HubClient
     }
 }
 
+#[derive(Serialize)]
+struct ConnectionData {
+    name: String
+}
+
+#[derive(Deserialize)]
+struct SignalrConnection {
+    ConnectionToken: String,
+    TryWebSockets: bool,
+}
+
+const CLIENT_PROTOCOL : &str = "1.5";
+
 impl HubClient {
-    pub async fn new(wss_url: &str, handler: Box<HubClientHandler>) -> Result<Addr<HubClient>, WsClientError> {
-        let c = new_ws_client(wss_url).await;
-        let (sink, stream) = c?.split();
+    async fn negotiate(url: &mut Url, hub: &str) -> Result<(String, SignalrConnection), HubClientError> {
+        let conn_data = serde_json::to_string(&vec![ConnectionData { name: hub.to_string() }]).unwrap();
+        let encoded: String = form_urlencoded::Serializer::new(String::new())
+            .append_pair("connectionData", conn_data.as_str())
+            .append_pair("clientProtocol", CLIENT_PROTOCOL)
+            .finish();
+        let mut negotiate_url = url.join("negotiate").unwrap();
+        negotiate_url.set_query(Some(&encoded));
+
+
+        let ssl = {
+            let mut ssl = openssl::ssl::SslConnector::builder(openssl::ssl::SslMethod::tls()).unwrap();
+            ssl.build()
+        };
+        let connector = awc::Connector::new().ssl(ssl).finish();
+        let client = Client::build()
+            .connector(connector)
+            .finish();
+        let mut result = client.get(negotiate_url.clone().into_string()).send().await?;
+        let bytes = result.body().await?;
+        let cookies = result.cookies()?;
+        let cookies_str : Vec<String> = cookies.clone().into_iter().map(|c| c.to_string()).collect();
+        let cookie_str = cookies_str.join(";");
+        let resp : SignalrConnection = serde_json::from_slice(&bytes)?;
+        Ok((cookie_str, resp))
+    }
+
+    pub async fn new(hub: &'static str, wss_url: &str, handler: Box<HubClientHandler>) -> Result<Addr<HubClient>, HubClientError> {
+        let signalr_url : &mut Url = &mut Url::parse(wss_url).unwrap();
+        let (cookies, resp) = HubClient::negotiate(signalr_url, hub).await?;
+        if !resp.TryWebSockets {
+            return Err(HubClientError::WsClientError("Websockets are not enabled for this SignalR server".to_string()));
+        }
+        let conn_data = serde_json::to_string(&vec![ConnectionData { name: hub.to_string() }]).unwrap();
+        let encoded: String = form_urlencoded::Serializer::new(String::new())
+            .append_pair("connectionToken", resp.ConnectionToken.as_str())
+            .append_pair("connectionData", conn_data.as_str())
+            .append_pair("clientProtocol", CLIENT_PROTOCOL)
+            .append_pair("transport", "webSockets")
+            .finish();
+        let mut connection_url : Url = signalr_url.join("connect").unwrap();
+        connection_url.set_query(Some(&encoded));
+        let c = new_ws_client(connection_url.as_str()).await?;
+        let (sink, stream) = c.split();
         Ok(HubClient::create(|ctx| {
             HubClient::add_stream(stream, ctx);
             HubClient {
