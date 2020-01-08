@@ -10,7 +10,7 @@ use actix_codec::Framed;
 use std::io;
 use futures::stream::{SplitSink, StreamExt};
 use awc::error::{WsProtocolError, WsClientError, SendRequestError};
-use actix::{StreamHandler, Context, Actor, Addr};
+use actix::{StreamHandler, Context, Actor, Addr, Handler};
 use bytes::{Buf, Bytes};
 use std::time::{Duration, Instant};
 use actix::io::SinkWrite;
@@ -107,6 +107,26 @@ struct SignalrConnection {
     TryWebSockets: bool,
 }
 
+#[derive(Serialize, Message)]
+#[rtype(result = "()")]
+pub struct HubQuery {
+    H: String,
+    M: String,
+    A: String,
+    I: i32
+}
+
+impl HubQuery {
+    pub fn new(hub: String, method: String, data: String, sends: i32) -> HubQuery {
+        HubQuery {
+            H: hub,
+            M: method,
+            A: data,
+            I: sends
+        }
+    }
+}
+
 const CLIENT_PROTOCOL : &str = "1.5";
 
 impl HubClient {
@@ -152,7 +172,7 @@ impl HubClient {
             .finish();
         let mut connection_url : Url = signalr_url.join("connect").unwrap();
         connection_url.set_query(Some(&encoded));
-        let c = new_ws_client(connection_url.as_str()).await?;
+        let c = new_ws_client(connection_url.as_str(), cookies).await?;
         let (sink, stream) = c.split();
         Ok(HubClient::create(|ctx| {
             HubClient::add_stream(stream, ctx);
@@ -171,6 +191,7 @@ impl HubClient {
         let m = msg.get("M");
         match m {
             Some(Value::Array(data)) => {
+//                println!("{:?}", data);
                 data.into_iter().map(|inner_data| {
                     let hub: Option<&Value> = inner_data.get("H");
                     match hub {
@@ -219,6 +240,15 @@ impl StreamHandler<Result<Frame, WsProtocolError>> for HubClient {
     }
 }
 
+impl Handler<HubQuery> for HubClient {
+    type Result = ();
+
+    fn handle(&mut self, msg: HubQuery, ctx: &mut Self::Context) -> Self::Result {
+        let result = serde_json::to_string(&msg).unwrap();
+        self.inner.write(Message::Text(result));
+    }
+}
+
 impl actix::io::WriteHandler<WsProtocolError> for HubClient
 {}
 
@@ -226,7 +256,7 @@ pub trait HubClientHandler {
     fn handle(&self, method: &str, message: &Map<String, Value>);
 }
 
-pub async fn new_ws_client(url: &str) -> Result<Framed<BoxedSocket, Codec>, WsClientError> {
+pub async fn new_ws_client(url: &str, cookie: String) -> Result<Framed<BoxedSocket, Codec>, WsClientError> {
     let ssl = {
         let mut ssl = openssl::ssl::SslConnector::builder(openssl::ssl::SslMethod::tls()).unwrap();
         let _ = ssl.set_alpn_protos(b"\x08http/1.1");
@@ -234,6 +264,7 @@ pub async fn new_ws_client(url: &str) -> Result<Framed<BoxedSocket, Codec>, WsCl
     };
     let connector = awc::Connector::new().ssl(ssl).finish();
     let client = Client::build()
+        .header("Cookie", cookie)
         .connector(connector)
         .finish();
 

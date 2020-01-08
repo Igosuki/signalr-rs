@@ -8,7 +8,7 @@
 extern crate actix;
 extern crate signalr_rs;
 
-use signalr_rs::hub::client::{HubClientHandler, HubClient};
+use signalr_rs::hub::client::{HubClientHandler, HubClient, HubQuery};
 use futures::io;
 use actix::{System, Arbiter, Addr};
 use serde_json::{Value, Map};
@@ -19,7 +19,12 @@ struct BittrexHandler {
 
 impl HubClientHandler for BittrexHandler {
     fn handle(&self, method: &str, message: &Map<String, Value>) {
-        println!("{:?}", message);
+        match method {
+            "uE" => println!("Market Delta : {:?}", message),
+            "uS" => println!("Summary Delta : {:?}", message),
+            _ => println!("Unknown message : method {:?} message {:?}", method, message)
+        }
+
     }
 }
 
@@ -28,9 +33,14 @@ fn main() -> io::Result<()> {
 
     Arbiter::spawn(async {
         let handler = Box::new(BittrexHandler{});
-        let client = HubClient::new("c2", "https://socket.bittrex.com/signalr/", handler).await;
+        let hub = "c2";
+        let client = HubClient::new(hub, "https://socket.bittrex.com/signalr/", handler).await;
         match client {
-            Ok(addr) => (),
+            Ok(addr) => {
+                addr.do_send(HubQuery::new(hub.to_string(), "SubscribeToExchangeDeltas".to_string(), "BTC-ETH".to_string(), 1));
+                addr.do_send(HubQuery::new(hub.to_string(), "SubscribeToSummaryDeltas".to_string(), "".to_string(), 2));
+                addr.do_send(HubQuery::new(hub.to_string(), "queryExchangeState".to_string(), "BTC-NEO".to_string(), 3));
+            },
             Err(e) => {
                 println!("Hub client error : {:?}", e);
                 System::current().stop();
