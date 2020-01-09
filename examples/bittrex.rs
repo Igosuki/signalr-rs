@@ -12,6 +12,7 @@ use signalr_rs::hub::client::{HubClientHandler, HubClient, HubQuery};
 use futures::io;
 use actix::{System, Arbiter, Addr};
 use serde_json::{Value, Map};
+use serde::{Serialize, Deserialize};
 
 struct BittrexHandler {
 
@@ -28,6 +29,16 @@ impl HubClientHandler for BittrexHandler {
     }
 }
 
+#[derive(Serialize, Deserialize)]
+struct SubscribeToExchangeDeltasQuery {
+    marketName: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct QueryExchangeStateQuery {
+    market: String,
+}
+
 fn main() -> io::Result<()> {
     let sys = System::new("websocket-client");
 
@@ -37,9 +48,11 @@ fn main() -> io::Result<()> {
         let client = HubClient::new(hub, "https://socket.bittrex.com/signalr/", handler).await;
         match client {
             Ok(addr) => {
-                addr.do_send(HubQuery::new(hub.to_string(), "SubscribeToExchangeDeltas".to_string(), "BTC-ETH".to_string(), 1));
+                let q = SubscribeToExchangeDeltasQuery { marketName : "BTC-ETH".to_string() };
+                addr.do_send(HubQuery::new(hub.to_string(), "SubscribeToExchangeDeltas".to_string(), q, 1));
                 addr.do_send(HubQuery::new(hub.to_string(), "SubscribeToSummaryDeltas".to_string(), "".to_string(), 2));
-                addr.do_send(HubQuery::new(hub.to_string(), "queryExchangeState".to_string(), "BTC-NEO".to_string(), 3));
+                let q = QueryExchangeStateQuery { market: "BTC-NEO".to_string() };
+                addr.do_send(HubQuery::new(hub.to_string(), "QueryExchangeState".to_string(), q, 3));
             },
             Err(e) => {
                 println!("Hub client error : {:?}", e);

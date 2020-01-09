@@ -109,15 +109,15 @@ struct SignalrConnection {
 
 #[derive(Serialize, Message)]
 #[rtype(result = "()")]
-pub struct HubQuery {
+pub struct HubQuery<T> {
     H: String,
     M: String,
-    A: String,
+    A: T,
     I: i32
 }
 
-impl HubQuery {
-    pub fn new(hub: String, method: String, data: String, sends: i32) -> HubQuery {
+impl <T> HubQuery<T> {
+    pub fn new(hub: String, method: String, data: T, sends: i32) -> HubQuery<T> {
         HubQuery {
             H: hub,
             M: method,
@@ -189,9 +189,10 @@ impl HubClient {
     fn handle_bytes(&self, bytes: Bytes) -> Result<(), HubClientError> {
         let msg: Map<String, Value> = serde_json::from_slice(bytes.bytes()).unwrap();
         let m = msg.get("M");
+//        println!("m {:?}", m);
         match m {
             Some(Value::Array(data)) => {
-//                println!("{:?}", data);
+//                println!("data {:?}", data);
                 data.into_iter().map(|inner_data| {
                     let hub: Option<&Value> = inner_data.get("H");
                     match hub {
@@ -233,17 +234,18 @@ impl StreamHandler<Result<Frame, WsProtocolError>> for HubClient {
             Ok(Frame::Text(txt)) => {
                 self.handle_bytes(txt);
             }
-            _ => {
-                ();
+            Ok(Frame::Binary(b)) => {
+                self.handle_bytes(b);
             }
+            _ => ()
         }
     }
 }
 
-impl Handler<HubQuery> for HubClient {
+impl <'de, T> Handler<HubQuery<T>> for HubClient where T: Deserialize<'de> + Serialize {
     type Result = ();
 
-    fn handle(&mut self, msg: HubQuery, ctx: &mut Self::Context) -> Self::Result {
+    fn handle(&mut self, msg: HubQuery<T>, ctx: &mut Self::Context) -> Self::Result {
         let result = serde_json::to_string(&msg).unwrap();
         self.inner.write(Message::Text(result));
     }
