@@ -19,6 +19,8 @@ use awc::cookie::Cookie;
 use serde::{Serialize, Deserialize};
 use actix_http::cookie::{ParseError as CookieParseError};
 use actix_http::error::PayloadError;
+use base64::DecodeError;
+use std::collections::VecDeque;
 
 #[derive(Debug, Fail)]
 pub enum HubClientError {
@@ -35,12 +37,20 @@ pub enum HubClientError {
     #[fail(display = "payload error {:?}", 0)]
     PayloadError(String),
     #[fail(display = "ws client error {:?}", 0)]
-    WsClientError(String)
+    WsClientError(String),
+    #[fail(display = "invalid base 64 data {:?}", 0)]
+    Base64DecodeError(DecodeError)
 }
 
 impl From<NoneError> for HubClientError {
     fn from(_: NoneError) -> Self {
         HubClientError::MissingData
+    }
+}
+
+impl From<DecodeError> for HubClientError {
+    fn from(e: DecodeError) -> Self {
+        HubClientError::Base64DecodeError(e)
     }
 }
 
@@ -74,12 +84,17 @@ impl From<WsClientError> for HubClientError {
     }
 }
 
+trait PendingQuery {
+    fn query(&self) -> String;
+}
+
 pub struct HubClient {
     hb: Instant,
     name: String,
-    methods: HashMap<String, String>,
+    connected: bool,
     handler: Box<HubClientHandler>,
     inner: SinkWrite<Message, SplitSink<Framed<BoxedSocket, Codec>, Message>>,
+    pending_queries: VecDeque<Box<dyn PendingQuery>>
 }
 
 impl Actor for HubClient
@@ -88,11 +103,11 @@ impl Actor for HubClient
 
     fn started(&mut self, ctx: &mut Context<Self>) {
         // start heartbeats otherwise server will disconnect after 10 seconds
-        println!("Started");
+        debug!("Hub clients started");
     }
 
     fn stopped(&mut self, _: &mut Context<Self>) {
-        println!("Disconnected");
+        debug!("Hub client disconnected");
     }
 }
 
@@ -113,11 +128,11 @@ pub struct HubQuery<T> {
     H: String,
     M: String,
     A: T,
-    I: i32
+    I: String
 }
 
 impl <T> HubQuery<T> {
-    pub fn new(hub: String, method: String, data: T, sends: i32) -> HubQuery<T> {
+    pub fn new(hub: String, method: String, data: T, sends: String) -> HubQuery<T> {
         HubQuery {
             H: hub,
             M: method,
@@ -127,9 +142,28 @@ impl <T> HubQuery<T> {
     }
 }
 
+impl <T> PendingQuery for HubQuery<T> where T: Serialize {
+    fn query(&self) -> String {
+        serde_json::to_string(self).unwrap()
+    }
+}
+
 const CLIENT_PROTOCOL : &str = "1.5";
 
 impl HubClient {
+    fn connected(&mut self) {
+        self.connected = true;
+        loop {
+            match self.pending_queries.pop_back() {
+                None => break,
+                Some(pq) => match self.inner.write(Message::Text(pq.query())) {
+                    Ok(_) => (),
+                    Err(e) => debug!("Pending query write unsuccessful")
+                }
+            }
+        };
+    }
+
     async fn negotiate(url: &mut Url, hub: &str) -> Result<(String, SignalrConnection), HubClientError> {
         let conn_data = serde_json::to_string(&vec![ConnectionData { name: hub.to_string() }]).unwrap();
         let encoded: String = form_urlencoded::Serializer::new(String::new())
@@ -179,20 +213,51 @@ impl HubClient {
             HubClient {
                 inner: SinkWrite::new(sink, ctx),
                 handler,
-                methods: HashMap::new(),
-                name: "".to_string(),
-                hb: Instant::now()
+                connected: false,
+                name: hub.to_string(),
+                hb: Instant::now(),
+                pending_queries: VecDeque::new()
             }
         }))
     }
 
-    fn handle_bytes(&self, bytes: Bytes) -> Result<(), HubClientError> {
+    fn handle_bytes(&mut self, bytes: Bytes) -> Result<(), HubClientError> {
         let msg: Map<String, Value> = serde_json::from_slice(bytes.bytes()).unwrap();
+        if msg.get("S").is_some() {
+            self.connected();
+            return Ok(());
+        }
+        let id = msg.get("I").and_then(|i| i.as_str());
+        if let Some(error_msg) = msg.get("E") {
+            debug!("Error message {:?} for identifier {:?} ", error_msg, id);
+            self.handler.error(id, error_msg);
+            return Ok(());
+        }
+        match msg.get("R") {
+            Some(Value::Bool(was_successful)) => {
+                if *was_successful {
+                    debug!("Query {:?} was successful", id);
+                } else {
+                    debug!("Query {:?} failed without error", id);
+                }
+                return Ok(());
+            }
+            Some(v) => {
+                match id {
+                    Some(id) => self.handler.handle(id, v),
+                    _ => {
+                        debug!("No id to identify response query for msg : ${:?}", msg);
+                        return Ok(());
+                    }
+                }
+
+            }
+            _ => ()
+        }
+
         let m = msg.get("M");
-//        println!("m {:?}", m);
         match m {
             Some(Value::Array(data)) => {
-//                println!("data {:?}", data);
                 data.into_iter().map(|inner_data| {
                     let hub: Option<&Value> = inner_data.get("H");
                     match hub {
@@ -200,8 +265,8 @@ impl HubClient {
                             let m: Option<&Value> = inner_data.get("M");
                             let a: Option<&Value> = inner_data.get("A");
                             match (m, a) {
-                                (Some(Value::String(method)), Some(Value::Object(message))) => {
-                                    Ok(self.handler.handle(method, message))
+                                (Some(Value::String(method)), Some(v)) => {
+                                    Ok(self.handler.handle(method, v))
                                 }
                                 _ => {
                                     let m_str = serde_json::to_string(&m)?;
@@ -242,12 +307,16 @@ impl StreamHandler<Result<Frame, WsProtocolError>> for HubClient {
     }
 }
 
-impl <'de, T> Handler<HubQuery<T>> for HubClient where T: Deserialize<'de> + Serialize {
+impl <'de, T> Handler<HubQuery<T>> for HubClient where T: Deserialize<'de> + Serialize + 'static {
     type Result = ();
 
     fn handle(&mut self, msg: HubQuery<T>, ctx: &mut Self::Context) -> Self::Result {
-        let result = serde_json::to_string(&msg).unwrap();
-        self.inner.write(Message::Text(result));
+        if !self.connected {
+            self.pending_queries.push_back(Box::new(msg));
+        } else {
+            let result = serde_json::to_string(&msg).unwrap();
+            self.inner.write(Message::Text(result));
+        }
     }
 }
 
@@ -255,7 +324,14 @@ impl actix::io::WriteHandler<WsProtocolError> for HubClient
 {}
 
 pub trait HubClientHandler {
-    fn handle(&self, method: &str, message: &Map<String, Value>);
+    /// Called every time the SignalR client manages to connect (receives 'S': 1)
+    fn connected(&self) {}
+
+    /// Called for every error
+    fn error(&self, id: Option<&str>, msg: &Value) {}
+
+    /// Called for every message with a method 'M'
+    fn handle(&self, method: &str, message: &Value);
 }
 
 pub async fn new_ws_client(url: &str, cookie: String) -> Result<Framed<BoxedSocket, Codec>, WsClientError> {
