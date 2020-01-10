@@ -262,7 +262,7 @@ fn main() -> io::Result<()> {
     Arbiter::spawn(async {
         let hub = "c2";
         let handler = Box::new(BittrexHandler { hub: hub.to_string() });
-        let client = HubClient::new(hub, "https://socket.bittrex.com/signalr/", handler).await;
+        let client = HubClient::new(hub, "https://socket.bittrex.com/signalr/", 100, handler).await;
         match client {
             Ok(addr) => {
 //                addr.do_send(HubQuery::new(hub.to_string(), "SubscribeToSummaryDeltas".to_string(), "".to_string(), 0));

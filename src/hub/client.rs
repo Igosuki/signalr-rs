@@ -7,17 +7,17 @@ use awc::{BoxedSocket, Client};
 use awc::ws::{Codec, Frame, Message};
 use url::{form_urlencoded::{self, byte_serialize, parse}, Url, ParseError};
 use actix_codec::Framed;
-use std::io;
+use std::{io, thread};
 use futures::stream::{SplitSink, StreamExt};
 use awc::error::{WsProtocolError, WsClientError, SendRequestError};
-use actix::{StreamHandler, Context, Actor, Addr, Handler};
+use actix::{StreamHandler, Context, Actor, Addr, Handler, ContextFutureSpawner, AsyncContext};
 use bytes::{Buf, Bytes};
 use std::time::{Duration, Instant};
 use actix::io::SinkWrite;
 use actix_web::HttpMessage;
 use awc::cookie::Cookie;
 use serde::{Serialize, Deserialize};
-use actix_http::cookie::{ParseError as CookieParseError};
+use actix_http::cookie::ParseError as CookieParseError;
 use actix_http::error::PayloadError;
 use base64::DecodeError;
 use std::collections::VecDeque;
@@ -39,7 +39,7 @@ pub enum HubClientError {
     #[fail(display = "ws client error {:?}", 0)]
     WsClientError(String),
     #[fail(display = "invalid base 64 data {:?}", 0)]
-    Base64DecodeError(DecodeError)
+    Base64DecodeError(DecodeError),
 }
 
 impl From<NoneError> for HubClientError {
@@ -92,9 +92,11 @@ pub struct HubClient {
     hb: Instant,
     name: String,
     connected: bool,
+    /// Time between two successive pending queries
+    query_backoff: u64,
     handler: Box<HubClientHandler>,
     inner: SinkWrite<Message, SplitSink<Framed<BoxedSocket, Codec>, Message>>,
-    pending_queries: VecDeque<Box<dyn PendingQuery>>
+    pending_queries: VecDeque<Box<dyn PendingQuery>>,
 }
 
 impl Actor for HubClient
@@ -128,40 +130,30 @@ pub struct HubQuery<T> {
     H: String,
     M: String,
     A: T,
-    I: String
+    I: String,
 }
 
-impl <T> HubQuery<T> {
+impl<T> HubQuery<T> {
     pub fn new(hub: String, method: String, data: T, sends: String) -> HubQuery<T> {
         HubQuery {
             H: hub,
             M: method,
             A: data,
-            I: sends
+            I: sends,
         }
     }
 }
 
-impl <T> PendingQuery for HubQuery<T> where T: Serialize {
+impl<T> PendingQuery for HubQuery<T> where T: Serialize {
     fn query(&self) -> String {
         serde_json::to_string(self).unwrap()
     }
 }
 
-const CLIENT_PROTOCOL : &str = "1.5";
+const CLIENT_PROTOCOL: &str = "1.5";
 
 impl HubClient {
     fn connected(&mut self) {
-        self.connected = true;
-        loop {
-            match self.pending_queries.pop_back() {
-                None => break,
-                Some(pq) => match self.inner.write(Message::Text(pq.query())) {
-                    Ok(_) => (),
-                    Err(e) => debug!("Pending query write unsuccessful")
-                }
-            }
-        };
     }
 
     async fn negotiate(url: &mut Url, hub: &str) -> Result<(String, SignalrConnection), HubClientError> {
@@ -185,14 +177,14 @@ impl HubClient {
         let mut result = client.get(negotiate_url.clone().into_string()).send().await?;
         let bytes = result.body().await?;
         let cookies = result.cookies()?;
-        let cookies_str : Vec<String> = cookies.clone().into_iter().map(|c| c.to_string()).collect();
+        let cookies_str: Vec<String> = cookies.clone().into_iter().map(|c| c.to_string()).collect();
         let cookie_str = cookies_str.join(";");
-        let resp : SignalrConnection = serde_json::from_slice(&bytes)?;
+        let resp: SignalrConnection = serde_json::from_slice(&bytes)?;
         Ok((cookie_str, resp))
     }
 
-    pub async fn new(hub: &'static str, wss_url: &str, handler: Box<HubClientHandler>) -> Result<Addr<HubClient>, HubClientError> {
-        let signalr_url : &mut Url = &mut Url::parse(wss_url).unwrap();
+    pub async fn new(hub: &'static str, wss_url: &str, query_backoff: u64, handler: Box<HubClientHandler>) -> Result<Addr<HubClient>, HubClientError> {
+        let signalr_url: &mut Url = &mut Url::parse(wss_url).unwrap();
         let (cookies, resp) = HubClient::negotiate(signalr_url, hub).await?;
         if !resp.TryWebSockets {
             return Err(HubClientError::WsClientError("Websockets are not enabled for this SignalR server".to_string()));
@@ -204,7 +196,7 @@ impl HubClient {
             .append_pair("clientProtocol", CLIENT_PROTOCOL)
             .append_pair("transport", "webSockets")
             .finish();
-        let mut connection_url : Url = signalr_url.join("connect").unwrap();
+        let mut connection_url: Url = signalr_url.join("connect").unwrap();
         connection_url.set_query(Some(&encoded));
         let c = new_ws_client(connection_url.as_str(), cookies).await?;
         let (sink, stream) = c.split();
@@ -214,17 +206,34 @@ impl HubClient {
                 inner: SinkWrite::new(sink, ctx),
                 handler,
                 connected: false,
+                query_backoff,
                 name: hub.to_string(),
                 hb: Instant::now(),
-                pending_queries: VecDeque::new()
+                pending_queries: VecDeque::new(),
             }
         }))
     }
 
-    fn handle_bytes(&mut self, bytes: Bytes) -> Result<(), HubClientError> {
+    fn handle_bytes(&mut self, ctx: &mut Context<Self>, bytes: Bytes) -> Result<(), HubClientError> {
         let msg: Map<String, Value> = serde_json::from_slice(bytes.bytes()).unwrap();
         if msg.get("S").is_some() {
-            self.connected();
+            self.connected = true;
+            let mut backoff = self.query_backoff;
+            loop {
+                match self.pending_queries.pop_back() {
+                    None => break,
+                    Some(pq) => {
+                        let query = pq.query().clone();
+                        ctx.run_later(Duration::from_millis(backoff), |act, ctx| {
+                            match act.inner.write(Message::Text(query)) {
+                                Ok(_) => debug!("Wrote query"),
+                                Err(e) => debug!("Pending query write unsuccessful")
+                            }
+                        });
+                        backoff += backoff;
+                    }
+                }
+            }
             return Ok(());
         }
         let id = msg.get("I").and_then(|i| i.as_str());
@@ -250,7 +259,6 @@ impl HubClient {
                         return Ok(());
                     }
                 }
-
             }
             _ => ()
         }
@@ -297,17 +305,17 @@ impl StreamHandler<Result<Frame, WsProtocolError>> for HubClient {
                 self.inner.write(Message::Pong(Bytes::copy_from_slice(&msg)));
             }
             Ok(Frame::Text(txt)) => {
-                self.handle_bytes(txt);
+                self.handle_bytes(ctx, txt);
             }
             Ok(Frame::Binary(b)) => {
-                self.handle_bytes(b);
+                self.handle_bytes(ctx, b);
             }
             _ => ()
         }
     }
 }
 
-impl <'de, T> Handler<HubQuery<T>> for HubClient where T: Deserialize<'de> + Serialize + 'static {
+impl<'de, T> Handler<HubQuery<T>> for HubClient where T: Deserialize<'de> + Serialize + 'static {
     type Result = ();
 
     fn handle(&mut self, msg: HubQuery<T>, ctx: &mut Self::Context) -> Self::Result {
