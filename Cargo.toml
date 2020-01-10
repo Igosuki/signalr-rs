@@ -4,6 +4,11 @@ version = "0.1.0"
 authors = ["Guillaume Balaine <igosuki@gmail.com>"]
 edition = "2018"
 description = "SignalR client based on actix web client and async await"
+keywords = [ "signalr", "actix" ]
+readme = "README.md"
+license = "MIT"
+homepage = "https://github.com/Igosuki/signalr-rs"
+repository = "https://github.com/Igosuki/signalr-rs"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [[example]]
