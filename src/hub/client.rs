@@ -331,7 +331,7 @@ pub trait HubClientHandler {
     fn error(&self, id: Option<&str>, msg: &Value) {}
 
     /// Called for every message with a method 'M'
-    fn handle(&self, method: &str, message: &Value);
+    fn handle(&mut self, method: &str, message: &Value);
 }
 
 pub async fn new_ws_client(url: &str, cookie: String) -> Result<Framed<BoxedSocket, Codec>, WsClientError> {
