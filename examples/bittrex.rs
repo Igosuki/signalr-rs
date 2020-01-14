@@ -267,32 +267,28 @@ impl HubClientHandler for BittrexHandler {
     }
 }
 
-fn main() -> io::Result<()> {
+#[actix_rt::main]
+async fn main() -> io::Result<()> {
     env_logger::init();
-    let sys = System::new("websocket-client");
-
-    Arbiter::spawn(async {
-        let hub = "c2";
-        let handler = Box::new(BittrexHandler {
-            hub: hub.to_string(),
-        });
-        let client = HubClient::new(hub, "https://socket.bittrex.com/signalr/", 100, RestartPolicy::Always, handler).await;
-        match client {
-            Ok(addr) => {
-                addr.do_send(HubQuery::new(hub.to_string(), "SubscribeToExchangeDeltas".to_string(), vec!["BTC-NEO"], "1".to_string()));
-                addr.do_send(HubQuery::new(
-                    hub.to_string(),
-                    "QueryExchangeState".to_string(),
-                    vec!["BTC-NEO"],
-                    "QE2".to_string(),
-                ));
-            }
-            Err(e) => {
-                println!("Hub client error : {:?}", e);
-                System::current().stop();
-            }
-        }
+    let hub = "c2";
+    let handler = Box::new(BittrexHandler {
+        hub: hub.to_string(),
     });
-    sys.run().unwrap();
-    Ok(())
+    let client = HubClient::new(hub, "https://socket.bittrex.com/signalr/", 100, RestartPolicy::Always, handler).await;
+    match client {
+        Ok(addr) => {
+            addr.do_send(HubQuery::new(hub.to_string(), "SubscribeToExchangeDeltas".to_string(), vec!["BTC-NEO"], "1".to_string()));
+            addr.do_send(HubQuery::new(
+                hub.to_string(),
+                "QueryExchangeState".to_string(),
+                vec!["BTC-NEO"],
+                "QE2".to_string(),
+            ));
+        }
+        Err(e) => {
+            println!("Hub client error : {:?}", e);
+            System::current().stop();
+        }
+    }
+    tokio::signal::ctrl_c().await
 }

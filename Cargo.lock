@@ -1501,6 +1501,7 @@ dependencies = [
  "actix",
  "actix-codec",
  "actix-http",
+ "actix-rt",
  "actix-web",
  "awc",
  "backoff",
@@ -1518,6 +1519,7 @@ dependencies = [
  "serde",
  "serde_derive",
  "serde_json",
+ "tokio",
  "url",
 ]
 
@@ -1614,9 +1616,9 @@ dependencies = [
 
 [[package]]
 name = "tokio"
-version = "0.2.8"
+version = "0.2.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a9d5acfe1b1130d50ac2286a2f1f8cf49309680366ceb7609ce369b75c9058d4"
+checksum = "ffa2fdcfa937b20cb3c822a635ceecd5fc1a27a6a474527e5516aa24b8c8820a"
 dependencies = [
  "bytes",
  "fnv",
