@@ -6,21 +6,22 @@
 // return Result<_, Error>.
 
 extern crate actix;
-extern crate signalr_rs;
 extern crate env_logger;
-#[macro_use] extern crate serde;
+extern crate signalr_rs;
+#[macro_use]
+extern crate serde;
 
-use signalr_rs::hub::client::{HubClientHandler, HubClient, HubQuery, HubClientError};
-use futures::io;
-use actix::{System, Arbiter};
-use serde_json::{Value, Map};
-use libflate::deflate::Decoder;
+use actix::{Arbiter, System};
 use base64;
-use std::io::Read;
+use futures::io;
+use libflate::deflate::Decoder;
+use serde::de::DeserializeOwned;
+use serde::Deserialize;
 use serde_derive;
 use serde_json;
-use serde::Deserialize;
-use serde::de::DeserializeOwned;
+use serde_json::{Map, Value};
+use signalr_rs::hub::client::{HubClient, HubClientError, HubClientHandler, HubQuery, RestartPolicy};
+use std::io::Read;
 
 struct BittrexHandler {
     hub: String,
@@ -44,7 +45,6 @@ struct FillEntry {
     Uuid: String,
     #[serde(alias = "t")]
     Total: f32,
-
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -209,22 +209,31 @@ struct SummaryDeltaResponse {
 }
 
 impl BittrexHandler {
-    fn deflate<T>(binary: &String) -> Result<T, HubClientError> where T: DeserializeOwned {
+    fn deflate<T>(binary: &String) -> Result<T, HubClientError>
+    where
+        T: DeserializeOwned,
+    {
         let decoded = base64::decode(binary)?;
         let mut decoder = Decoder::new(&decoded[..]);
-        let mut decoded_data : Vec<u8> = Vec::new();
+        let mut decoded_data: Vec<u8> = Vec::new();
         decoder.read_to_end(&mut decoded_data);
         let v: &[u8] = &decoded_data;
         serde_json::from_slice::<T>(v).map_err(|e| HubClientError::ParseError(e))
     }
 
-    fn deflate_array<T>(a: &Value) -> Result<T, HubClientError> where T: DeserializeOwned {
+    fn deflate_array<T>(a: &Value) -> Result<T, HubClientError>
+    where
+        T: DeserializeOwned,
+    {
         let data: Vec<String> = serde_json::from_value(a.clone())?;
         let binary = data.first().ok_or(HubClientError::MissingData)?;
         BittrexHandler::deflate::<T>(binary)
     }
 
-    fn deflate_string<T>(a: &Value) -> Result<T, HubClientError> where T: DeserializeOwned {
+    fn deflate_string<T>(a: &Value) -> Result<T, HubClientError>
+    where
+        T: DeserializeOwned,
+    {
         let binary: String = serde_json::from_value(a.clone())?;
         BittrexHandler::deflate::<T>(&binary)
     }
@@ -235,22 +244,25 @@ impl HubClientHandler for BittrexHandler {
 
     fn error(&self, id: Option<&str>, msg: &Value) {}
 
-    fn handle(&self, method: &str, message: &Value) {
+    fn handle(&mut self, method: &str, message: &Value) {
         match method {
             "uE" => {
                 let delta = BittrexHandler::deflate_array::<MarketDelta>(message);
                 println!("Market Delta : {:?}", delta)
-            },
+            }
             "uS" => {
                 let delta = BittrexHandler::deflate_array::<SummaryDeltaResponse>(message);
                 println!("Summary Delta : {:?}", delta)
-            },
+            }
             s if s.starts_with("QE") => {
                 let delta = BittrexHandler::deflate_string::<ExchangeState>(message).unwrap();
                 let r = serde_json::to_string(&delta);
                 println!("Exchange State message : {:?}", r)
             }
-            _ => println!("Unknown message : method {:?} message {:?}", method, message)
+            _ => println!(
+                "Unknown message : method {:?} message {:?}",
+                method, message
+            ),
         }
     }
 }
@@ -261,13 +273,19 @@ fn main() -> io::Result<()> {
 
     Arbiter::spawn(async {
         let hub = "c2";
-        let handler = Box::new(BittrexHandler { hub: hub.to_string() });
-        let client = HubClient::new(hub, "https://socket.bittrex.com/signalr/", 100, handler).await;
+        let handler = Box::new(BittrexHandler {
+            hub: hub.to_string(),
+        });
+        let client = HubClient::new(hub, "https://socket.bittrex.com/signalr/", 100, RestartPolicy::Always, handler).await;
         match client {
             Ok(addr) => {
-//                addr.do_send(HubQuery::new(hub.to_string(), "SubscribeToSummaryDeltas".to_string(), "".to_string(), 0));
-//                addr.do_send(HubQuery::new(hub.to_string(), "SubscribeToExchangeDeltas".to_string(), vec!["USDT-BTC"], 1));
-                addr.do_send(HubQuery::new(hub.to_string(), "QueryExchangeState".to_string(), vec!["BTC-NEO"], "QE2".to_string()));
+                addr.do_send(HubQuery::new(hub.to_string(), "SubscribeToExchangeDeltas".to_string(), vec!["BTC-NEO"], "1".to_string()));
+                addr.do_send(HubQuery::new(
+                    hub.to_string(),
+                    "QueryExchangeState".to_string(),
+                    vec!["BTC-NEO"],
+                    "QE2".to_string(),
+                ));
             }
             Err(e) => {
                 println!("Hub client error : {:?}", e);
