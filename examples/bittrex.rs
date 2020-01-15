@@ -20,7 +20,7 @@ use serde::Deserialize;
 use serde_derive;
 use serde_json;
 use serde_json::{Map, Value};
-use signalr_rs::hub::client::{HubClient, HubClientError, HubClientHandler, HubQuery, RestartPolicy};
+use signalr_rs::hub::client::{HubClient, HubClientError, HubClientHandler, HubQuery, RestartPolicy, PendingQuery};
 use std::io::Read;
 
 struct BittrexHandler {
@@ -240,7 +240,9 @@ impl BittrexHandler {
 }
 
 impl HubClientHandler for BittrexHandler {
-    fn connected(&self) {}
+    fn on_connect(&self) -> Vec<Box<PendingQuery>>{
+        vec![Box::new(HubQuery::new(self.hub.to_string(), "SubscribeToExchangeDeltas".to_string(), vec!["BTC-NEO"], "1".to_string()))]
+    }
 
     fn error(&self, id: Option<&str>, msg: &Value) {}
 
@@ -253,7 +255,7 @@ impl HubClientHandler for BittrexHandler {
             "uS" => {
                 let delta = BittrexHandler::deflate_array::<SummaryDeltaResponse>(message);
                 println!("Summary Delta : {:?}", delta)
-            }
+            }   
             s if s.starts_with("QE") => {
                 let delta = BittrexHandler::deflate_string::<ExchangeState>(message).unwrap();
                 let r = serde_json::to_string(&delta);
@@ -277,7 +279,6 @@ async fn main() -> io::Result<()> {
     let client = HubClient::new(hub, "https://socket.bittrex.com/signalr/", 100, RestartPolicy::Always, handler).await;
     match client {
         Ok(addr) => {
-            addr.do_send(HubQuery::new(hub.to_string(), "SubscribeToExchangeDeltas".to_string(), vec!["BTC-NEO"], "1".to_string()));
             addr.do_send(HubQuery::new(
                 hub.to_string(),
                 "QueryExchangeState".to_string(),

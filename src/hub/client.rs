@@ -87,7 +87,7 @@ impl From<WsClientError> for HubClientError {
     }
 }
 
-trait PendingQuery {
+pub trait PendingQuery {
     fn query(&self) -> String;
 }
 
@@ -260,6 +260,10 @@ impl HubClient {
         let msg: Map<String, Value> = serde_json::from_slice(bytes.bytes()).unwrap();
         if msg.get("S").is_some() {
             self.connected = true;
+            let queries : Vec<Box<PendingQuery>> = self.handler.on_connect();
+            for query in queries {
+                self.pending_queries.push_back(query);
+            }
             let mut backoff = self.query_backoff;
             loop {
                 match self.pending_queries.pop_back() {
@@ -413,7 +417,7 @@ impl actix::io::WriteHandler<WsProtocolError> for HubClient {}
 
 pub trait HubClientHandler {
     /// Called every time the SignalR client manages to connect (receives 'S': 1)
-    fn connected(&self) {}
+    fn on_connect(&self) -> Vec<Box<dyn PendingQuery>>;
 
     /// Called for every error
     fn error(&self, id: Option<&str>, msg: &Value) {}
