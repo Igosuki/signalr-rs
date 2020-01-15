@@ -255,7 +255,7 @@ impl HubClientHandler for BittrexHandler {
             "uS" => {
                 let delta = BittrexHandler::deflate_array::<SummaryDeltaResponse>(message);
                 println!("Summary Delta : {:?}", delta)
-            }   
+            }
             s if s.starts_with("QE") => {
                 let delta = BittrexHandler::deflate_string::<ExchangeState>(message).unwrap();
                 let r = serde_json::to_string(&delta);
