@@ -102,8 +102,8 @@ pub struct HubClient {
     name: String,
     connected: bool,
     /// Time between two successive pending queries
-    query_backoff: u64,
     handler: Box<dyn HubClientHandler>,
+    query_backoff: u64,
     inner: SinkWrite<Message, SplitSink<Framed<BoxedSocket, Codec>, Message>>,
     pending_queries: VecDeque<Box<dyn PendingQuery>>,
     connection_url: Url,
@@ -117,11 +117,11 @@ impl Actor for HubClient {
 
     fn started(&mut self, ctx: &mut Context<Self>) {
         // start heartbeats otherwise server will disconnect after 10 seconds
-        debug!("Hub clients started");
+        info!("Hub client started");
     }
 
     fn stopped(&mut self, _: &mut Context<Self>) {
-        debug!("Hub client disconnected");
+        warn!("Hub client disconnected");
     }
 }
 
@@ -272,11 +272,11 @@ impl HubClient {
                         let query = pq.query().clone();
                         ctx.run_later(Duration::from_millis(backoff), |act, ctx| {
                             match act.inner.write(Message::Text(query)) {
-                                Ok(_) => debug!("Wrote query"),
-                                Err(e) => debug!("Pending query write unsuccessful"),
+                                Ok(_) => trace!("Wrote query"),
+                                Err(e) => trace!("Pending query write unsuccessful"),
                             }
                         });
-                        backoff += backoff;
+                        backoff += self.query_backoff;
                     }
                 }
             }
@@ -284,23 +284,23 @@ impl HubClient {
         }
         let id = msg.get("I").and_then(|i| i.as_str());
         if let Some(error_msg) = msg.get("E") {
-            debug!("Error message {:?} for identifier {:?} ", error_msg, id);
+            trace!("Error message {:?} for identifier {:?} ", error_msg, id);
             self.handler.error(id, error_msg);
             return Ok(());
         }
         match msg.get("R") {
             Some(Value::Bool(was_successful)) => {
                 if *was_successful {
-                    debug!("Query {:?} was successful", id);
+                    trace!("Query {:?} was successful", id);
                 } else {
-                    debug!("Query {:?} failed without error", id);
+                    trace!("Query {:?} failed without error", id);
                 }
                 return Ok(());
             }
             Some(v) => match id {
                 Some(id) => self.handler.handle(id, v),
                 _ => {
-                    debug!("No id to identify response query for msg : ${:?}", msg);
+                    trace!("No id to identify response query for msg : ${:?}", msg);
                     return Ok(());
                 }
             },
@@ -348,7 +348,7 @@ impl HubClient {
 impl actix::Supervised for HubClient {
     fn restarting(&mut self, ctx: &mut <Self as Actor>::Context) {
         if self.restart_policy == RestartPolicy::Never {
-            debug!("Restart policy was 'never', exiting actor");
+            warn!("Restart policy was 'never', exiting actor");
             ctx.stop();
             return;
         }

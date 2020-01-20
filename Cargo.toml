@@ -1,6 +1,6 @@
 [package]
 name = "signalr_rs"
-version = "0.1.2"
+version = "0.1.3"
 authors = ["Guillaume Balaine <igosuki@gmail.com>"]
 edition = "2018"
 description = "SignalR client based on actix web client and async await"
