@@ -22,6 +22,7 @@ use serde_json;
 use serde_json::{Map, Value};
 use signalr_rs::hub::client::{HubClient, HubClientError, HubClientHandler, HubQuery, RestartPolicy, PendingQuery};
 use std::io::Read;
+use futures::future::Pending;
 
 struct BittrexHandler {
     hub: String,
@@ -132,15 +133,17 @@ enum TradeType {
     UPDATE,
 }
 
+#[allow(non_snake_case)]
 #[derive(Debug, Serialize, Deserialize)]
-struct OrderLog {
+pub(crate) struct OrderLog {
     #[serde(alias = "TY")]
-    Type: TradeType,
+    pub Type: i32,
     #[serde(alias = "R")]
-    Rate: f32,
+    pub Rate: f32,
     #[serde(alias = "Q")]
-    Quantity: f32,
+    pub Quantity: f32,
 }
+
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Fill {
@@ -156,18 +159,19 @@ struct Fill {
     TimeStamp: i64,
 }
 
+#[allow(non_snake_case)]
 #[derive(Debug, Serialize, Deserialize)]
-struct MarketDelta {
+pub(crate) struct MarketDelta {
     #[serde(alias = "M")]
-    MarketName: String,
+    pub MarketName: String,
     #[serde(alias = "N")]
     Nonce: i32,
     #[serde(alias = "Z")]
-    Buys: Vec<OrderLog>,
+    pub Buys: Vec<OrderLog>,
     #[serde(alias = "S")]
-    Sells: Vec<OrderLog>,
+    pub Sells: Vec<OrderLog>,
     #[serde(alias = "f")]
-    Fills: Vec<Fill>,
+    pub Fills: Vec<Fill>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -241,7 +245,8 @@ impl BittrexHandler {
 
 impl HubClientHandler for BittrexHandler {
     fn on_connect(&self) -> Vec<Box<PendingQuery>>{
-        vec![Box::new(HubQuery::new(self.hub.to_string(), "SubscribeToExchangeDeltas".to_string(), vec!["BTC-NEO"], "1".to_string()))]
+        let pairs = vec!["USDT-BCC", "USDT-BTC", "USDT-DASH", "USDT-ETC", "USDT-ETH", "USDT-LTC", "USDT-NEO", "USDT-OMG", "USDT-XMR", "USDT-XRP", "USDT-ZEC"];
+        pairs.into_iter().enumerate().map(|(i, p)| Box::new(HubQuery::new(self.hub.to_string(), "SubscribeToExchangeDeltas".to_string(), vec![p.to_string()], (i + 1).to_string())) as Box<PendingQuery>).collect()
     }
 
     fn error(&self, id: Option<&str>, msg: &Value) {}
@@ -276,7 +281,7 @@ async fn main() -> io::Result<()> {
     let handler = Box::new(BittrexHandler {
         hub: hub.to_string(),
     });
-    let client = HubClient::new(hub, "https://socket.bittrex.com/signalr/", 100, RestartPolicy::Always, handler).await;
+    let client = HubClient::new(hub, "https://socket.bittrex.com/signalr/", 20, RestartPolicy::Always, handler).await;
     match client {
         Ok(addr) => {
             addr.do_send(HubQuery::new(
