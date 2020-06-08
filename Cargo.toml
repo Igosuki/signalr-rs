@@ -13,7 +13,7 @@ repository = "https://github.com/Igosuki/signalr-rs"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [[example]]
 name = "bittrex_signalr"
-path = "examples/bittrex.rs.rs"
+path = "examples/bittrex.rs"
 
 [dependencies]
 awc = "2.0.0-alpha.2"
