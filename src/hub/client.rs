@@ -3,10 +3,10 @@ use actix::{
     Actor, ActorContext, Addr, AsyncContext, Context, ContextFutureSpawner, Handler,
     StreamHandler, Supervisor, WrapFuture, ActorFutureExt
 };
+use std::io::Read;
 use actix_codec::Framed;
-use actix_http::cookie::ParseError as CookieParseError;
+use actix_web::cookie::ParseError as CookieParseError;
 use actix_http::error::PayloadError;
-use actix_web::HttpMessage;
 use awc::error::{SendRequestError, WsClientError, WsProtocolError};
 use awc::ws::{Codec, Frame, Message};
 use awc::{BoxedSocket, Client};
@@ -198,7 +198,7 @@ impl HubClient {
                 openssl::ssl::SslConnector::builder(openssl::ssl::SslMethod::tls()).unwrap();
             ssl.build()
         };
-        let connector = awc::Connector::new().ssl(ssl).finish();
+        let connector = actix_http::client::Connector::new().ssl(ssl);
         let client = Client::builder().connector(connector).finish();
         let mut result = client
             .get(negotiate_url.clone().into_string())
@@ -265,7 +265,7 @@ impl HubClient {
         ctx: &mut Context<Self>,
         bytes: Bytes,
     ) -> Result<(), HubClientError> {
-        let msg: Map<String, Value> = serde_json::from_slice(bytes.bytes()).unwrap();
+        let msg: Map<String, Value> = serde_json::from_slice(bytes.as_ref()).unwrap();
         if msg.get("S").is_some() {
             self.connected = true;
             let queries : Vec<Box<dyn PendingQuery>> = self.handler.on_connect();
@@ -279,7 +279,7 @@ impl HubClient {
                     Some(pq) => {
                         let query = pq.query().clone();
                         ctx.run_later(Duration::from_millis(backoff), |act, ctx| {
-                            match act.inner.write(Message::Text(query)) {
+                            match act.inner.write(Message::Text(query.into())) {
                                 Some(_) => trace!("Wrote query"),
                                 None => trace!("Tried to write in a closing/closed sink"),
                             }
@@ -416,7 +416,7 @@ where
             self.pending_queries.push_back(Box::new(msg));
         } else {
             let result = serde_json::to_string(&msg).unwrap();
-            self.inner.write(Message::Text(result));
+            self.inner.write(Message::Text(result.into()));
         }
     }
 }
@@ -443,7 +443,7 @@ pub async fn new_ws_client(
         let _ = ssl.set_alpn_protos(b"\x08http/1.1");
         ssl.build()
     };
-    let connector = awc::Connector::new().ssl(ssl).finish();
+    let connector = awc::Connector::new().ssl(ssl);
     let client = Client::builder()
         .header("Cookie", cookie)
         .connector(connector)
