@@ -4,31 +4,29 @@
 // different exchanges and perform the same operation (such as get the current account's balance)
 // You can also use the Coinnect generic API if you want a better error handling since all methods
 // return Result<_, Error>.
-
 extern crate actix;
 extern crate env_logger;
 extern crate signalr_rs;
 #[macro_use]
 extern crate serde;
 
-use actix::{Arbiter, System};
+use actix::{System};
 use base64;
 use futures::io;
 use libflate::deflate::Decoder;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
-use serde_derive;
 use serde_json;
-use serde_json::{Map, Value};
+use serde_json::{Value};
 use signalr_rs::hub::client::{HubClient, HubClientError, HubClientHandler, HubQuery, RestartPolicy, PendingQuery};
 use std::io::Read;
-use futures::future::Pending;
 
 struct BittrexHandler {
     hub: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[allow(non_snake_case)]
 struct FillEntry {
     #[serde(alias = "F")]
     FillType: String,
@@ -49,6 +47,7 @@ struct FillEntry {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[allow(non_snake_case)]
 struct OrderPair {
     #[serde(alias = "Q")]
     Q: f32,
@@ -57,6 +56,7 @@ struct OrderPair {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[allow(non_snake_case)]
 struct ExchangeState {
     #[serde(alias = "M")]
     MarketName: String,
@@ -71,6 +71,7 @@ struct ExchangeState {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[allow(non_snake_case)]
 struct Order {
     #[serde(alias = "U")]
     Uuid: String,
@@ -115,6 +116,7 @@ struct Order {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[allow(non_snake_case)]
 struct OrderDelta {
     #[serde(alias = "w")]
     AccountUuid: String,
@@ -127,6 +129,7 @@ struct OrderDelta {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[allow(non_snake_case)]
 enum TradeType {
     ADD,
     REMOVE,
@@ -135,6 +138,7 @@ enum TradeType {
 
 #[allow(non_snake_case)]
 #[derive(Debug, Serialize, Deserialize)]
+#[allow(non_snake_case)]
 pub(crate) struct OrderLog {
     #[serde(alias = "TY")]
     pub Type: i32,
@@ -146,6 +150,7 @@ pub(crate) struct OrderLog {
 
 
 #[derive(Debug, Serialize, Deserialize)]
+#[allow(non_snake_case)]
 struct Fill {
     #[serde(alias = "FI")]
     FillId: i32,
@@ -161,6 +166,7 @@ struct Fill {
 
 #[allow(non_snake_case)]
 #[derive(Debug, Serialize, Deserialize)]
+#[allow(non_snake_case)]
 pub(crate) struct MarketDelta {
     #[serde(alias = "M")]
     pub MarketName: String,
@@ -175,6 +181,7 @@ pub(crate) struct MarketDelta {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[allow(non_snake_case)]
 struct SummaryDelta {
     #[serde(alias = "M")]
     MarketName: String,
@@ -205,6 +212,7 @@ struct SummaryDelta {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[allow(non_snake_case)]
 struct SummaryDeltaResponse {
     #[serde(alias = "N")]
     Nonce: i32,
@@ -220,7 +228,7 @@ impl BittrexHandler {
         let decoded = base64::decode(binary)?;
         let mut decoder = Decoder::new(&decoded[..]);
         let mut decoded_data: Vec<u8> = Vec::new();
-        decoder.read_to_end(&mut decoded_data);
+        decoder.read_to_end(&mut decoded_data)?;
         let v: &[u8] = &decoded_data;
         serde_json::from_slice::<T>(v).map_err(|e| HubClientError::ParseError(e))
     }
@@ -244,12 +252,12 @@ impl BittrexHandler {
 }
 
 impl HubClientHandler for BittrexHandler {
-    fn on_connect(&self) -> Vec<Box<PendingQuery>>{
+    fn on_connect(&self) -> Vec<Box<dyn PendingQuery>>{
         let pairs = vec!["USDT-BCC", "USDT-BTC", "USDT-DASH", "USDT-ETC", "USDT-ETH", "USDT-LTC", "USDT-NEO", "USDT-OMG", "USDT-XMR", "USDT-XRP", "USDT-ZEC"];
-        pairs.into_iter().enumerate().map(|(i, p)| Box::new(HubQuery::new(self.hub.to_string(), "SubscribeToExchangeDeltas".to_string(), vec![p.to_string()], (i + 1).to_string())) as Box<PendingQuery>).collect()
+        pairs.into_iter().enumerate().map(|(i, p)| Box::new(HubQuery::new(self.hub.to_string(), "SubscribeToExchangeDeltas".to_string(), vec![p.to_string()], (i + 1).to_string())) as Box<dyn PendingQuery>).collect()
     }
 
-    fn error(&self, id: Option<&str>, msg: &Value) {}
+    fn error(&self, _id: Option<&str>, _msg: &Value) {}
 
     fn handle(&mut self, method: &str, message: &Value) {
         match method {
@@ -296,5 +304,5 @@ async fn main() -> io::Result<()> {
             System::current().stop();
         }
     }
-    tokio::signal::ctrl_c().await
+    actix_rt::signal::ctrl_c().await
 }

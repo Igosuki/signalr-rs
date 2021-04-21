@@ -1,7 +1,7 @@
 use actix::io::SinkWrite;
 use actix::{
-    Actor, ActorContext, ActorFuture, Addr, AsyncContext, Context, ContextFutureSpawner, Handler,
-    StreamHandler, Supervised, Supervisor, WrapFuture,
+    Actor, ActorContext, Addr, AsyncContext, Context, ContextFutureSpawner, Handler,
+    StreamHandler, Supervisor, WrapFuture, ActorFutureExt
 };
 use actix_codec::Framed;
 use actix_http::cookie::ParseError as CookieParseError;
@@ -43,6 +43,8 @@ pub enum HubClientError {
     WsClientError(String),
     #[fail(display = "invalid base 64 data {:?}", 0)]
     Base64DecodeError(DecodeError),
+    #[fail(display = "failed to read from stream {:?}", 0)]
+    GenericIoError(String)
 }
 
 impl From<NoneError> for HubClientError {
@@ -84,6 +86,12 @@ impl From<PayloadError> for HubClientError {
 impl From<WsClientError> for HubClientError {
     fn from(e: WsClientError) -> Self {
         HubClientError::WsClientError(format!("{}", e))
+    }
+}
+
+impl From<std::io::Error> for HubClientError {
+    fn from(e: std::io::Error) -> Self {
+        HubClientError::GenericIoError(format!("{}", e))
     }
 }
 
@@ -191,7 +199,7 @@ impl HubClient {
             ssl.build()
         };
         let connector = awc::Connector::new().ssl(ssl).finish();
-        let client = Client::build().connector(connector).finish();
+        let client = Client::builder().connector(connector).finish();
         let mut result = client
             .get(negotiate_url.clone().into_string())
             .send()
@@ -260,7 +268,7 @@ impl HubClient {
         let msg: Map<String, Value> = serde_json::from_slice(bytes.bytes()).unwrap();
         if msg.get("S").is_some() {
             self.connected = true;
-            let queries : Vec<Box<PendingQuery>> = self.handler.on_connect();
+            let queries : Vec<Box<dyn PendingQuery>> = self.handler.on_connect();
             for query in queries {
                 self.pending_queries.push_back(query);
             }
@@ -272,8 +280,8 @@ impl HubClient {
                         let query = pq.query().clone();
                         ctx.run_later(Duration::from_millis(backoff), |act, ctx| {
                             match act.inner.write(Message::Text(query)) {
-                                Ok(_) => trace!("Wrote query"),
-                                Err(e) => trace!("Pending query write unsuccessful"),
+                                Some(_) => trace!("Wrote query"),
+                                None => trace!("Tried to write in a closing/closed sink"),
                             }
                         });
                         backoff += self.query_backoff;
@@ -436,7 +444,7 @@ pub async fn new_ws_client(
         ssl.build()
     };
     let connector = awc::Connector::new().ssl(ssl).finish();
-    let client = Client::build()
+    let client = Client::builder()
         .header("Cookie", cookie)
         .connector(connector)
         .finish();
