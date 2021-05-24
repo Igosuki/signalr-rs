@@ -10,15 +10,15 @@ extern crate signalr_rs;
 #[macro_use]
 extern crate serde;
 
-use actix::{System};
+use actix::System;
 use base64;
 use futures::io;
 use libflate::deflate::Decoder;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json;
-use serde_json::{Value};
-use signalr_rs::hub::client::{HubClient, HubClientError, HubClientHandler, HubQuery, RestartPolicy, PendingQuery};
+use serde_json::Value;
+use signalr_rs::hub::client::{HubClient, HubClientError, HubClientHandler, HubQuery, PendingQuery, RestartPolicy};
 use std::io::Read;
 
 struct BittrexHandler {
@@ -148,7 +148,6 @@ pub(crate) struct OrderLog {
     pub Quantity: f32,
 }
 
-
 #[derive(Debug, Serialize, Deserialize)]
 #[allow(non_snake_case)]
 struct Fill {
@@ -252,9 +251,32 @@ impl BittrexHandler {
 }
 
 impl HubClientHandler for BittrexHandler {
-    fn on_connect(&self) -> Vec<Box<dyn PendingQuery>>{
-        let pairs = vec!["USDT-BCC", "USDT-BTC", "USDT-DASH", "USDT-ETC", "USDT-ETH", "USDT-LTC", "USDT-NEO", "USDT-OMG", "USDT-XMR", "USDT-XRP", "USDT-ZEC"];
-        pairs.into_iter().enumerate().map(|(i, p)| Box::new(HubQuery::new(self.hub.to_string(), "SubscribeToExchangeDeltas".to_string(), vec![p.to_string()], (i + 1).to_string())) as Box<dyn PendingQuery>).collect()
+    fn on_connect(&self) -> Vec<Box<dyn PendingQuery>> {
+        let pairs = vec![
+            "USDT-BCC",
+            "USDT-BTC",
+            "USDT-DASH",
+            "USDT-ETC",
+            "USDT-ETH",
+            "USDT-LTC",
+            "USDT-NEO",
+            "USDT-OMG",
+            "USDT-XMR",
+            "USDT-XRP",
+            "USDT-ZEC",
+        ];
+        pairs
+            .into_iter()
+            .enumerate()
+            .map(|(i, p)| {
+                Box::new(HubQuery::new(
+                    self.hub.to_string(),
+                    "SubscribeToExchangeDeltas".to_string(),
+                    vec![p.to_string()],
+                    (i + 1).to_string(),
+                )) as Box<dyn PendingQuery>
+            })
+            .collect()
     }
 
     fn error(&self, _id: Option<&str>, _msg: &Value) {}
@@ -274,10 +296,7 @@ impl HubClientHandler for BittrexHandler {
                 let r = serde_json::to_string(&delta);
                 println!("Exchange State message : {:?}", r)
             }
-            _ => println!(
-                "Unknown message : method {:?} message {:?}",
-                method, message
-            ),
+            _ => println!("Unknown message : method {:?} message {:?}", method, message),
         }
     }
 }
@@ -286,10 +305,15 @@ impl HubClientHandler for BittrexHandler {
 async fn main() -> io::Result<()> {
     env_logger::init();
     let hub = "c2";
-    let handler = Box::new(BittrexHandler {
-        hub: hub.to_string(),
-    });
-    let client = HubClient::new(hub, "https://socket.bittrex.com/signalr/", 20, RestartPolicy::Always, handler).await;
+    let handler = Box::new(BittrexHandler { hub: hub.to_string() });
+    let client = HubClient::new(
+        hub,
+        "https://socket.bittrex.com/signalr/",
+        20,
+        RestartPolicy::Always,
+        handler,
+    )
+    .await;
     match client {
         Ok(addr) => {
             addr.do_send(HubQuery::new(

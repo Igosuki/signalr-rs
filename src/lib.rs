@@ -1,5 +1,3 @@
-#![feature(try_trait)]
-
 #[macro_use]
 extern crate failure;
 extern crate serde_derive;

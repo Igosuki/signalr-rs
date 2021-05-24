@@ -1,12 +1,9 @@
 use actix::io::SinkWrite;
-use actix::{
-    Actor, ActorContext, Addr, AsyncContext, Context, ContextFutureSpawner, Handler,
-    StreamHandler, Supervisor, WrapFuture, ActorFutureExt
-};
-use std::io::Read;
+use actix::{Actor, ActorContext, ActorFutureExt, Addr, AsyncContext, Context, ContextFutureSpawner, Handler,
+            StreamHandler, Supervisor, WrapFuture};
 use actix_codec::Framed;
-use actix_web::cookie::ParseError as CookieParseError;
 use actix_http::error::PayloadError;
+use actix_web::cookie::ParseError as CookieParseError;
 use awc::error::{SendRequestError, WsClientError, WsProtocolError};
 use awc::ws::{Codec, Frame, Message};
 use awc::{BoxedSocket, Client};
@@ -18,12 +15,11 @@ use futures::stream::{SplitSink, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::VecDeque;
+use std::io::Read;
 use std::option::NoneError;
 use std::time::{Duration, Instant};
-use url::{
-    form_urlencoded::{self},
-    Url,
-};
+use url::{form_urlencoded::{self},
+          Url};
 
 #[derive(Debug, Fail)]
 pub enum HubClientError {
@@ -44,55 +40,39 @@ pub enum HubClientError {
     #[fail(display = "invalid base 64 data {:?}", 0)]
     Base64DecodeError(DecodeError),
     #[fail(display = "failed to read from stream {:?}", 0)]
-    GenericIoError(String)
+    GenericIoError(String),
 }
 
 impl From<NoneError> for HubClientError {
-    fn from(_: NoneError) -> Self {
-        HubClientError::MissingData
-    }
+    fn from(_: NoneError) -> Self { HubClientError::MissingData }
 }
 
 impl From<DecodeError> for HubClientError {
-    fn from(e: DecodeError) -> Self {
-        HubClientError::Base64DecodeError(e)
-    }
+    fn from(e: DecodeError) -> Self { HubClientError::Base64DecodeError(e) }
 }
 
 impl From<serde_json::Error> for HubClientError {
-    fn from(e: serde_json::Error) -> Self {
-        HubClientError::ParseError(e)
-    }
+    fn from(e: serde_json::Error) -> Self { HubClientError::ParseError(e) }
 }
 
 impl From<SendRequestError> for HubClientError {
-    fn from(e: SendRequestError) -> Self {
-        HubClientError::RequestError(format!("{}", e))
-    }
+    fn from(e: SendRequestError) -> Self { HubClientError::RequestError(format!("{}", e)) }
 }
 
 impl From<CookieParseError> for HubClientError {
-    fn from(e: CookieParseError) -> Self {
-        HubClientError::CookieParseError(format!("{}", e))
-    }
+    fn from(e: CookieParseError) -> Self { HubClientError::CookieParseError(format!("{}", e)) }
 }
 
 impl From<PayloadError> for HubClientError {
-    fn from(e: PayloadError) -> Self {
-        HubClientError::PayloadError(format!("{}", e))
-    }
+    fn from(e: PayloadError) -> Self { HubClientError::PayloadError(format!("{}", e)) }
 }
 
 impl From<WsClientError> for HubClientError {
-    fn from(e: WsClientError) -> Self {
-        HubClientError::WsClientError(format!("{}", e))
-    }
+    fn from(e: WsClientError) -> Self { HubClientError::WsClientError(format!("{}", e)) }
 }
 
 impl From<std::io::Error> for HubClientError {
-    fn from(e: std::io::Error) -> Self {
-        HubClientError::GenericIoError(format!("{}", e))
-    }
+    fn from(e: std::io::Error) -> Self { HubClientError::GenericIoError(format!("{}", e)) }
 }
 
 pub trait PendingQuery {
@@ -168,9 +148,7 @@ impl<T> PendingQuery for HubQuery<T>
 where
     T: Serialize,
 {
-    fn query(&self) -> String {
-        serde_json::to_string(self).unwrap()
-    }
+    fn query(&self) -> String { serde_json::to_string(self).unwrap() }
 }
 
 const CLIENT_PROTOCOL: &str = "1.5";
@@ -178,14 +156,8 @@ const CLIENT_PROTOCOL: &str = "1.5";
 impl HubClient {
     fn connected(&mut self) {}
 
-    async fn negotiate(
-        url: &mut Url,
-        hub: &str,
-    ) -> Result<(String, SignalrConnection), HubClientError> {
-        let conn_data = serde_json::to_string(&vec![ConnectionData {
-            name: hub.to_string(),
-        }])
-        .unwrap();
+    async fn negotiate(url: &mut Url, hub: &str) -> Result<(String, SignalrConnection), HubClientError> {
+        let conn_data = serde_json::to_string(&vec![ConnectionData { name: hub.to_string() }]).unwrap();
         let encoded: String = form_urlencoded::Serializer::new(String::new())
             .append_pair("connectionData", conn_data.as_str())
             .append_pair("clientProtocol", CLIENT_PROTOCOL)
@@ -194,16 +166,12 @@ impl HubClient {
         negotiate_url.set_query(Some(&encoded));
 
         let ssl = {
-            let mut ssl =
-                openssl::ssl::SslConnector::builder(openssl::ssl::SslMethod::tls()).unwrap();
+            let mut ssl = openssl::ssl::SslConnector::builder(openssl::ssl::SslMethod::tls()).unwrap();
             ssl.build()
         };
         let connector = actix_http::client::Connector::new().ssl(ssl);
         let client = Client::builder().connector(connector).finish();
-        let mut result = client
-            .get(negotiate_url.clone().into_string())
-            .send()
-            .await?;
+        let mut result = client.get(negotiate_url.clone().into_string()).send().await?;
         let bytes = result.body().await?;
         let cookies = result.cookies()?;
         let cookies_str: Vec<String> = cookies.clone().into_iter().map(|c| c.to_string()).collect();
@@ -226,10 +194,7 @@ impl HubClient {
                 "Websockets are not enabled for this SignalR server".to_string(),
             ));
         }
-        let conn_data = serde_json::to_string(&vec![ConnectionData {
-            name: hub.to_string(),
-        }])
-        .unwrap();
+        let conn_data = serde_json::to_string(&vec![ConnectionData { name: hub.to_string() }]).unwrap();
         let encoded: String = form_urlencoded::Serializer::new(String::new())
             .append_pair("connectionToken", resp.ConnectionToken.as_str())
             .append_pair("connectionData", conn_data.as_str())
@@ -260,15 +225,11 @@ impl HubClient {
         }))
     }
 
-    fn handle_bytes(
-        &mut self,
-        ctx: &mut Context<Self>,
-        bytes: Bytes,
-    ) -> Result<(), HubClientError> {
+    fn handle_bytes(&mut self, ctx: &mut Context<Self>, bytes: Bytes) -> Result<(), HubClientError> {
         let msg: Map<String, Value> = serde_json::from_slice(bytes.as_ref()).unwrap();
         if msg.get("S").is_some() {
             self.connected = true;
-            let queries : Vec<Box<dyn PendingQuery>> = self.handler.on_connect();
+            let queries: Vec<Box<dyn PendingQuery>> = self.handler.on_connect();
             for query in queries {
                 self.pending_queries.push_back(query);
             }
@@ -326,9 +287,7 @@ impl HubClient {
                             let m: Option<&Value> = inner_data.get("M");
                             let a: Option<&Value> = inner_data.get("A");
                             match (m, a) {
-                                (Some(Value::String(method)), Some(v)) => {
-                                    Ok(self.handler.handle(method, v))
-                                }
+                                (Some(Value::String(method)), Some(v)) => Ok(self.handler.handle(method, v)),
                                 _ => {
                                     let m_str = serde_json::to_string(&m)?;
                                     let a_str = serde_json::to_string(&a)?;
@@ -340,9 +299,7 @@ impl HubClient {
                         }
                         _ => {
                             let hub_str = serde_json::to_string(&hub)?;
-                            Err(HubClientError::InvalidData {
-                                data: vec![hub_str],
-                            })
+                            Err(HubClientError::InvalidData { data: vec![hub_str] })
                         }
                     }
                 })
@@ -391,8 +348,7 @@ impl StreamHandler<Result<Frame, WsProtocolError>> for HubClient {
         match msg {
             Ok(Frame::Ping(msg)) => {
                 self.hb = Instant::now();
-                self.inner
-                    .write(Message::Pong(Bytes::copy_from_slice(&msg)));
+                self.inner.write(Message::Pong(Bytes::copy_from_slice(&msg)));
             }
             Ok(Frame::Text(txt)) => {
                 self.handle_bytes(ctx, txt);
@@ -434,20 +390,14 @@ pub trait HubClientHandler {
     fn handle(&mut self, method: &str, message: &Value);
 }
 
-pub async fn new_ws_client(
-    url: String,
-    cookie: String,
-) -> Result<Framed<BoxedSocket, Codec>, WsClientError> {
+pub async fn new_ws_client(url: String, cookie: String) -> Result<Framed<BoxedSocket, Codec>, WsClientError> {
     let ssl = {
         let mut ssl = openssl::ssl::SslConnector::builder(openssl::ssl::SslMethod::tls()).unwrap();
         let _ = ssl.set_alpn_protos(b"\x08http/1.1");
         ssl.build()
     };
     let connector = awc::Connector::new().ssl(ssl);
-    let client = Client::builder()
-        .header("Cookie", cookie)
-        .connector(connector)
-        .finish();
+    let client = Client::builder().header("Cookie", cookie).connector(connector).finish();
 
     let (response, framed) = client.ws(url).connect().await?;
 
