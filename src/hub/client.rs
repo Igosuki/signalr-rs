@@ -10,12 +10,12 @@ use awc::{BoxedSocket, Client};
 use backoff::backoff::Backoff;
 use backoff::ExponentialBackoff;
 use base64::DecodeError;
-use bytes::{Buf, Bytes};
+use bytes::{Bytes};
 use futures::stream::{SplitSink, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::VecDeque;
-use std::io::Read;
+
 use std::time::{Duration, Instant};
 use url::{form_urlencoded::{self},
           Url};
@@ -98,7 +98,7 @@ pub struct HubClient {
 impl Actor for HubClient {
     type Context = Context<Self>;
 
-    fn started(&mut self, ctx: &mut Context<Self>) {
+    fn started(&mut self, _ctx: &mut Context<Self>) {
         // start heartbeats otherwise server will disconnect after 10 seconds
         info!("Hub client started");
     }
@@ -161,7 +161,7 @@ impl HubClient {
         negotiate_url.set_query(Some(&encoded));
 
         let ssl = {
-            let mut ssl = openssl::ssl::SslConnector::builder(openssl::ssl::SslMethod::tls()).unwrap();
+            let ssl = openssl::ssl::SslConnector::builder(openssl::ssl::SslMethod::tls()).unwrap();
             ssl.build()
         };
         let connector = actix_http::client::Connector::new().ssl(ssl);
@@ -234,7 +234,7 @@ impl HubClient {
                     None => break,
                     Some(pq) => {
                         let query = pq.query().clone();
-                        ctx.run_later(Duration::from_millis(backoff), |act, ctx| {
+                        ctx.run_later(Duration::from_millis(backoff), |act, _ctx| {
                             match act.inner.write(Message::Text(query.into())) {
                                 Some(_) => trace!("Wrote query"),
                                 None => trace!("Tried to write in a closing/closed sink"),
@@ -362,7 +362,7 @@ where
 {
     type Result = ();
 
-    fn handle(&mut self, msg: HubQuery<T>, ctx: &mut Self::Context) -> Self::Result {
+    fn handle(&mut self, msg: HubQuery<T>, _ctx: &mut Self::Context) -> Self::Result {
         if !self.connected {
             self.pending_queries.push_back(Box::new(msg));
         } else {
@@ -379,7 +379,7 @@ pub trait HubClientHandler {
     fn on_connect(&self) -> Vec<Box<dyn PendingQuery>>;
 
     /// Called for every error
-    fn error(&self, id: Option<&str>, msg: &Value) {}
+    fn error(&self, _id: Option<&str>, _msg: &Value) {}
 
     /// Called for every message with a method 'M'
     fn handle(&mut self, method: &str, message: &Value);
@@ -394,7 +394,7 @@ pub async fn new_ws_client(url: String, cookie: String) -> Result<Framed<BoxedSo
     let connector = awc::Connector::new().ssl(ssl);
     let client = Client::builder().header("Cookie", cookie).connector(connector).finish();
 
-    let (response, framed) = client.ws(url).connect().await?;
+    let (_response, framed) = client.ws(url).connect().await?;
 
     Ok(framed)
 }
