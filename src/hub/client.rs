@@ -16,7 +16,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::VecDeque;
 use std::io::Read;
-use std::option::NoneError;
 use std::time::{Duration, Instant};
 use url::{form_urlencoded::{self},
           Url};
@@ -41,10 +40,6 @@ pub enum HubClientError {
     Base64DecodeError(DecodeError),
     #[fail(display = "failed to read from stream {:?}", 0)]
     GenericIoError(String),
-}
-
-impl From<NoneError> for HubClientError {
-    fn from(_: NoneError) -> Self { HubClientError::MissingData }
 }
 
 impl From<DecodeError> for HubClientError {

@@ -1,4 +1,3 @@
-#![feature(try_trait)]
 // This example shows how to use the generic API provided by Coinnect.
 // This method is useful if you have to iterate throught multiple accounts of
 // different exchanges and perform the same operation (such as get the current account's balance)
