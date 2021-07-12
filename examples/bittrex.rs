@@ -17,8 +17,10 @@ use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json;
 use serde_json::Value;
-use signalr_rs::hub::client::{HubClient, HubClientError, HubClientHandler, HubQuery, PendingQuery, RestartPolicy};
+use signalr_rs::hub::client::{HubClientBuilder, HubClientError, HubClientHandler, HubQuery, PendingQuery, RestartPolicy};
 use std::io::Read;
+use url::{form_urlencoded::{self},
+          Url};
 
 struct BittrexHandler {
     hub: String,
@@ -218,6 +220,11 @@ struct SummaryDeltaResponse {
     Delta: SummaryDelta,
 }
 
+#[derive(Serialize)]
+struct ConnectionData {
+    name: String,
+}
+
 impl BittrexHandler {
     fn deflate<T>(binary: &String) -> Result<T, HubClientError>
     where
@@ -305,14 +312,32 @@ async fn main() -> io::Result<()> {
     env_logger::init();
     let hub = "c2";
     let handler = Box::new(BittrexHandler { hub: hub.to_string() });
-    let client = HubClient::new(
-        hub,
-        "https://socket.bittrex.com/signalr/",
-        20,
-        RestartPolicy::Always,
-        handler,
-    )
-    .await;
+    
+    let conn_data = serde_json::to_string(&vec![ConnectionData { name: hub.to_string() }]).unwrap();
+    #[allow(unused_mut)]
+    let mut builder = HubClientBuilder
+        ::with_hub_and_url(hub, Url::parse("https://socket.bittrex.com/signalr/").unwrap())
+        .query_backoff(20)
+        .restart_policy(RestartPolicy::Always)
+        .build_connection_query(Box::new(move |token| {
+            form_urlencoded::Serializer::new(String::new())
+            .append_pair("connectionToken", token)
+            .append_pair("connectionData", &conn_data)
+            .append_pair("clientProtocol", "1.5")
+            .append_pair("transport", "webSockets")
+            .finish()
+        }));
+    if cfg!(target_os = "windows") {
+        let ssl = {
+            let mut ssl = openssl::ssl::SslConnector::builder(openssl::ssl::SslMethod::tls()).unwrap();
+            ssl.set_verify(openssl::ssl::SslVerifyMode::NONE);
+            ssl.build()
+        };
+        builder = builder.ssl_connector(ssl);
+    }
+
+    let client = builder.build_and_start(handler).await;
+
     match client {
         Ok(addr) => {
             addr.do_send(HubQuery::new(
