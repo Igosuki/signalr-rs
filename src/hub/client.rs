@@ -10,7 +10,7 @@ use awc::{BoxedSocket, Client};
 use backoff::backoff::Backoff;
 use backoff::ExponentialBackoff;
 use base64::DecodeError;
-use bytes::{Bytes};
+use bytes::Bytes;
 use futures::stream::{SplitSink, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -236,8 +236,8 @@ impl HubClient {
                         let query = pq.query().clone();
                         ctx.run_later(Duration::from_millis(backoff), |act, _ctx| {
                             match act.inner.write(Message::Text(query.into())) {
-                                Some(_) => trace!("Wrote query"),
-                                None => trace!("Tried to write in a closing/closed sink"),
+                                Ok(_) => trace!("Wrote query"),
+                                Err(_) => trace!("Tried to write in a closing/closed sink"),
                             }
                         });
                         backoff += self.query_backoff;
