@@ -17,8 +17,9 @@ use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json;
 use serde_json::Value;
-use signalr_rs::hub::client::{HubClient, HubClientError, HubClientHandler, HubQuery, PendingQuery, RestartPolicy};
+use signalr_rs::hub::client::{HubClientError, HubClientHandler, HubQuery, PendingQuery, HubClientBuilder};
 use std::io::Read;
+use url::Url;
 
 struct BittrexHandler {
     hub: String,
@@ -305,14 +306,7 @@ async fn main() -> io::Result<()> {
     env_logger::init();
     let hub = "c2";
     let handler = Box::new(BittrexHandler { hub: hub.to_string() });
-    let client = HubClient::new(
-        hub,
-        "https://socket.bittrex.com/signalr/",
-        20,
-        RestartPolicy::Always,
-        handler,
-    )
-    .await;
+    let client = HubClientBuilder::with_hub_and_url(hub, Url::parse("https://socket.bittrex.com/signalr/").unwrap()).start_supervised(handler).await;
     match client {
         Ok(addr) => {
             addr.do_send(HubQuery::new(
