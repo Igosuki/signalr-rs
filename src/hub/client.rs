@@ -173,8 +173,8 @@ impl HubClientBuilder {
         let connector = self
             .ssl_connector
             .clone()
-            .or(default_ssl_connector().ok())
-            .ok_or_else(|| HubClientError::NoSslConnector)?;
+            .or_else(|| default_ssl_connector().ok())
+            .ok_or(HubClientError::NoSslConnector)?;
         let (cookies, resp) = self.negotiate(connector.clone()).await?;
         if !resp.TryWebSockets {
             return Err(HubClientError::WsClientError(
@@ -310,8 +310,10 @@ impl HubClient {
         cookies: String,
         handler: Box<dyn HubClientHandler>,
     ) -> Result<Addr<HubClient>> {
-        let mut conn_backoff = ExponentialBackoff::default();
-        conn_backoff.max_elapsed_time = None;
+        let conn_backoff = ExponentialBackoff {
+            max_elapsed_time: None,
+            ..ExponentialBackoff::default()
+        };
         let c = new_ws_client(ssl.clone(), connection_url.to_string(), cookies.clone()).await?;
         let (sink, stream) = c.split();
         Ok(Supervisor::start(move |ctx| {
@@ -343,9 +345,9 @@ impl HubClient {
             }
             let mut backoff = self.query_backoff;
             self.pending_queries.iter().for_each(|pq| {
-                let query = pq.query().clone();
+                let query = pq.query();
                 ctx.run_later(Duration::from_millis(backoff), |act, _ctx| {
-                    if let Err(_) = act.inner.write(Message::Text(query.into())) {
+                    if act.inner.write(Message::Text(query.into())).is_err() {
                         trace!("Tried to write pending query in closed sink");
                     }
                 });
@@ -380,32 +382,32 @@ impl HubClient {
 
         let m = msg.get("M");
         match m {
-            Some(Value::Array(data)) => data
-                .into_iter()
-                .map(|inner_data| {
-                    let hub: Option<&Value> = inner_data.get("H");
-                    match hub {
-                        Some(Value::String(hub_name)) if hub_name.to_lowercase() == self.name => {
-                            let m: Option<&Value> = inner_data.get("M");
-                            let a: Option<&Value> = inner_data.get("A");
-                            match (m, a) {
-                                (Some(Value::String(method)), Some(v)) => Ok(self.handler.handle(method, v)),
-                                _ => {
-                                    let m_str = serde_json::to_string(&m)?;
-                                    let a_str = serde_json::to_string(&a)?;
-                                    Err(HubClientError::InvalidData {
-                                        data: vec![m_str, a_str],
-                                    })
-                                }
+            Some(Value::Array(data)) => data.iter().try_for_each(|inner_data| {
+                let hub: Option<&Value> = inner_data.get("H");
+                match hub {
+                    Some(Value::String(hub_name)) if hub_name.to_lowercase() == self.name => {
+                        let m: Option<&Value> = inner_data.get("M");
+                        let a: Option<&Value> = inner_data.get("A");
+                        match (m, a) {
+                            (Some(Value::String(method)), Some(v)) => {
+                                self.handler.handle(method, v);
+                                Ok(())
+                            }
+                            _ => {
+                                let m_str = serde_json::to_string(&m)?;
+                                let a_str = serde_json::to_string(&a)?;
+                                Err(HubClientError::InvalidData {
+                                    data: vec![m_str, a_str],
+                                })
                             }
                         }
-                        _ => {
-                            let hub_str = serde_json::to_string(&hub)?;
-                            Err(HubClientError::InvalidData { data: vec![hub_str] })
-                        }
                     }
-                })
-                .collect(),
+                    _ => {
+                        let hub_str = serde_json::to_string(&hub)?;
+                        Err(HubClientError::InvalidData { data: vec![hub_str] })
+                    }
+                }
+            }),
             _ => Ok(()),
         }
     }
@@ -452,12 +454,12 @@ impl StreamHandler<std::result::Result<Frame, WsProtocolError>> for HubClient {
         match msg {
             Ok(Frame::Ping(msg)) => {
                 self.hb = Instant::now();
-                if let Err(_) = self.inner.write(Message::Pong(Bytes::copy_from_slice(&msg))) {
+                if self.inner.write(Message::Pong(Bytes::copy_from_slice(&msg))).is_err() {
                     trace!("failed to write back pong");
                 }
             }
             Ok(Frame::Text(b)) | Ok(Frame::Binary(b)) => {
-                if let Err(_) = self.handle_bytes(ctx, b) {
+                if self.handle_bytes(ctx, b).is_err() {
                     trace!("failed to handle bytes");
                 }
             }

@@ -10,12 +10,10 @@ extern crate signalr_rs;
 extern crate serde;
 
 use actix::System;
-use base64;
 use futures::io;
 use libflate::deflate::Decoder;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
-use serde_json;
 use serde_json::Value;
 use signalr_rs::hub::client::{HubClientBuilder, HubClientError, HubClientHandler, HubQuery, PendingQuery};
 use std::io::Read;
@@ -128,8 +126,8 @@ struct OrderDelta {
     Order: Order,
 }
 
+#[allow(non_snake_case, clippy::upper_case_acronyms)]
 #[derive(Debug, Serialize, Deserialize)]
-#[allow(non_snake_case)]
 enum TradeType {
     ADD,
     REMOVE,
@@ -138,7 +136,6 @@ enum TradeType {
 
 #[allow(non_snake_case)]
 #[derive(Debug, Serialize, Deserialize)]
-#[allow(non_snake_case)]
 pub(crate) struct OrderLog {
     #[serde(alias = "TY")]
     pub Type: i32,
@@ -220,7 +217,7 @@ struct SummaryDeltaResponse {
 }
 
 impl BittrexHandler {
-    fn deflate<T>(binary: &String) -> Result<T, HubClientError>
+    fn deflate<T>(binary: &str) -> Result<T, HubClientError>
     where
         T: DeserializeOwned,
     {
@@ -229,7 +226,7 @@ impl BittrexHandler {
         let mut decoded_data: Vec<u8> = Vec::new();
         decoder.read_to_end(&mut decoded_data)?;
         let v: &[u8] = &decoded_data;
-        serde_json::from_slice::<T>(v).map_err(|e| HubClientError::ParseError(e))
+        serde_json::from_slice::<T>(v).map_err(HubClientError::ParseError)
     }
 
     fn deflate_array<T>(a: &Value) -> Result<T, HubClientError>
