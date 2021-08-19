@@ -15,9 +15,13 @@ repository = "https://github.com/Igosuki/signalr-rs"
 name = "bittrex_signalr"
 path = "examples/bittrex.rs"
 
+[features]
+default = ["zstd"]
+zstd = ["actix-web/compress-zstd"]
+
 [dependencies]
 awc = "3.0.0-beta.5"
-actix-web = { version ="4.0.0-beta.6", features = ["openssl"] }
+actix-web = { version = "4.0.0-beta.6", features = ["openssl", "compress-brotli", "compress-gzip", "cookies"], default-features = false }
 actix = "0.12"
 actix-http = "3.0.0-beta.6"
 serde_json = "1.0"
