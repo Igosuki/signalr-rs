@@ -16,30 +16,31 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::VecDeque;
 
+use openssl::ssl::SslConnector;
 use std::time::{Duration, Instant};
+use thiserror::Error;
 use url::{form_urlencoded::{self},
           Url};
-use openssl::ssl::SslConnector;
 
-#[derive(Debug, Fail)]
+#[derive(Debug, Error)]
 pub enum HubClientError {
-    #[fail(display = "invalid data : {:?}", data)]
+    #[error("invalid data : {0:?}", data)]
     InvalidData { data: Vec<String> },
-    #[fail(display = "missing key")]
+    #[error("missing key")]
     MissingData,
-    #[fail(display = "invalid json data {}", 0)]
+    #[error("invalid json data {0}")]
     ParseError(serde_json::Error),
-    #[fail(display = "send request error {:?}", 0)]
+    #[error("send request error {0}")]
     RequestError(String),
-    #[fail(display = "cookie error {:?}", 0)]
+    #[error("cookie error {0}")]
     CookieParseError(String),
-    #[fail(display = "payload error {:?}", 0)]
+    #[error("payload error {0}")]
     PayloadError(String),
-    #[fail(display = "ws client error {:?}", 0)]
+    #[error("ws client error {0}")]
     WsClientError(String),
-    #[fail(display = "invalid base 64 data {:?}", 0)]
+    #[error("invalid base 64 data {0}")]
     Base64DecodeError(DecodeError),
-    #[fail(display = "failed to read from stream {:?}", 0)]
+    #[error("failed to read from stream {0}")]
     GenericIoError(String),
 }
 
@@ -95,7 +96,7 @@ pub struct HubClientBuilder {
     connection_url: Url,
     restart_policy: RestartPolicy,
     ssl_connector: Option<SslConnector>,
-    connection_query_builder: Option<Box<dyn Fn(&str) -> String>>
+    connection_query_builder: Option<Box<dyn Fn(&str) -> String>>,
 }
 
 impl HubClientBuilder {
@@ -108,7 +109,7 @@ impl HubClientBuilder {
             connection_url,
             restart_policy: RestartPolicy::Always,
             ssl_connector: None,
-            connection_query_builder: None
+            connection_query_builder: None,
         }
     }
 
@@ -133,7 +134,10 @@ impl HubClientBuilder {
     }
 
     async fn negotiate(&self, ssl: SslConnector) -> Result<(String, SignalrConnection), HubClientError> {
-        let conn_data = serde_json::to_string(&vec![ConnectionData { name: self.hub_name.clone() }]).unwrap();
+        let conn_data = serde_json::to_string(&vec![ConnectionData {
+            name: self.hub_name.clone(),
+        }])
+        .unwrap();
         let mut negotiate_url = self.signalr_url.join("negotiate").unwrap();
         let encoded: String = form_urlencoded::Serializer::new(String::new())
             .append_pair("connectionData", conn_data.as_str())
@@ -157,7 +161,7 @@ impl HubClientBuilder {
 
     pub async fn start_supervised(
         mut self,
-        handler: Box<dyn HubClientHandler>
+        handler: Box<dyn HubClientHandler>,
     ) -> Result<Addr<HubClient>, HubClientError> {
         let connector = self.ssl_connector.clone().unwrap_or_else(|| default_ssl_connector());
         let (cookies, resp) = self.negotiate(connector.clone()).await?;
@@ -172,11 +176,23 @@ impl HubClientBuilder {
             self.default_connection_query(resp.ConnectionToken.as_str())
         };
         self.connection_url.set_query(Some(&encoded));
-        HubClient::start_new(self.hub_name.to_string(), self.connection_url.clone(), connector, self.query_backoff, self.restart_policy, cookies, handler).await
+        HubClient::start_new(
+            self.hub_name.to_string(),
+            self.connection_url.clone(),
+            connector,
+            self.query_backoff,
+            self.restart_policy,
+            cookies,
+            handler,
+        )
+        .await
     }
 
     fn default_connection_query(&self, token: &str) -> String {
-        let conn_data = serde_json::to_string(&vec![ConnectionData { name: self.hub_name.clone() }]).unwrap();
+        let conn_data = serde_json::to_string(&vec![ConnectionData {
+            name: self.hub_name.clone(),
+        }])
+        .unwrap();
         form_urlencoded::Serializer::new(String::new())
             .append_pair("connectionToken", token)
             .append_pair("connectionData", conn_data.as_str())
@@ -385,7 +401,11 @@ impl actix::Supervised for HubClient {
             ctx.stop();
             return;
         }
-        let client1 = new_ws_client(self.connector.clone(), self.connection_url.to_string(), self.cookies.clone());
+        let client1 = new_ws_client(
+            self.connector.clone(),
+            self.connection_url.to_string(),
+            self.cookies.clone(),
+        );
         client1
             .into_actor(self)
             .map(|res, act, ctx| match res {
@@ -414,13 +434,19 @@ impl StreamHandler<Result<Frame, WsProtocolError>> for HubClient {
         match msg {
             Ok(Frame::Ping(msg)) => {
                 self.hb = Instant::now();
-                self.inner.write(Message::Pong(Bytes::copy_from_slice(&msg)));
+                if let Err(_) = self.inner.write(Message::Pong(Bytes::copy_from_slice(&msg))) {
+                    trace!("failed to write back pong");
+                }
             }
             Ok(Frame::Text(txt)) => {
-                self.handle_bytes(ctx, txt);
+                if let Err(_) = self.handle_bytes(ctx, txt) {
+                    trace!("failed to handle text");
+                }
             }
             Ok(Frame::Binary(b)) => {
-                self.handle_bytes(ctx, b);
+                if let Err(_) = self.handle_bytes(ctx, txt) {
+                    trace!("failed to handle text");
+                }
             }
             _ => (),
         }
@@ -456,7 +482,11 @@ pub trait HubClientHandler {
     fn handle(&mut self, method: &str, message: &Value);
 }
 
-pub async fn new_ws_client(connector: SslConnector, url: String, cookie: String) -> Result<Framed<BoxedSocket, Codec>, WsClientError> {
+pub async fn new_ws_client(
+    connector: SslConnector,
+    url: String,
+    cookie: String,
+) -> Result<Framed<BoxedSocket, Codec>, WsClientError> {
     let connector = awc::Connector::new().ssl(connector);
     let client = Client::builder().header("Cookie", cookie).connector(connector).finish();
 
