@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::VecDeque;
 
+use futures::Future;
 use openssl::error::ErrorStack;
 use openssl::ssl::SslConnector;
 use std::time::{Duration, Instant};
@@ -286,6 +287,19 @@ const CLIENT_PROTOCOL: &str = "1.5";
 impl HubClient {
     #[allow(dead_code)]
     fn connected(&mut self) {}
+
+    pub fn new(
+        hub: &str,
+        signalr_url: &str,
+        query_backoff: u64,
+        restart_policy: RestartPolicy,
+        handler: Box<dyn HubClientHandler>,
+    ) -> impl Future<Output = Result<Addr<HubClient>>> {
+        HubClientBuilder::with_hub_and_url(hub, Url::parse(signalr_url).unwrap())
+            .restart_policy(restart_policy)
+            .query_backoff(query_backoff)
+            .start_supervised(handler)
+    }
 
     pub async fn start_new(
         hub: String,
