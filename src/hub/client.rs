@@ -16,30 +16,40 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::VecDeque;
 
+use futures::Future;
+use openssl::error::ErrorStack;
+use openssl::ssl::SslConnector;
 use std::time::{Duration, Instant};
+use thiserror::Error;
 use url::{form_urlencoded::{self},
           Url};
 
-#[derive(Debug, Fail)]
+#[derive(Debug, Error)]
 pub enum HubClientError {
-    #[fail(display = "invalid data : {:?}", data)]
+    #[error("invalid data : {0:?}", data)]
     InvalidData { data: Vec<String> },
-    #[fail(display = "missing key")]
+    #[error("missing key")]
     MissingData,
-    #[fail(display = "invalid json data {}", 0)]
+    #[error("invalid json data {0}")]
     ParseError(serde_json::Error),
-    #[fail(display = "send request error {:?}", 0)]
+    #[error("send request error {0}")]
     RequestError(String),
-    #[fail(display = "cookie error {:?}", 0)]
+    #[error("cookie error {0}")]
     CookieParseError(String),
-    #[fail(display = "payload error {:?}", 0)]
+    #[error("payload error {0}")]
     PayloadError(String),
-    #[fail(display = "ws client error {:?}", 0)]
+    #[error("ws client error {0}")]
     WsClientError(String),
-    #[fail(display = "invalid base 64 data {:?}", 0)]
+    #[error("invalid base 64 data {0}")]
     Base64DecodeError(DecodeError),
-    #[fail(display = "failed to read from stream {:?}", 0)]
+    #[error("failed to read from stream {0}")]
     GenericIoError(String),
+    #[error("tried to send in a closed sink")]
+    ClosedSink,
+    #[error("failed to create ssl connector")]
+    NoSslConnector,
+    #[error("failed to create ssl connector")]
+    SslError(#[from] ErrorStack),
 }
 
 impl From<DecodeError> for HubClientError {
@@ -70,6 +80,8 @@ impl From<std::io::Error> for HubClientError {
     fn from(e: std::io::Error) -> Self { HubClientError::GenericIoError(format!("{}", e)) }
 }
 
+pub type Result<T> = std::result::Result<T, HubClientError>;
+
 pub trait PendingQuery {
     fn query(&self) -> String;
 }
@@ -78,6 +90,127 @@ pub trait PendingQuery {
 pub enum RestartPolicy {
     Always,
     Never,
+}
+
+fn default_ssl_connector() -> Result<SslConnector> {
+    let mut ssl = openssl::ssl::SslConnector::builder(openssl::ssl::SslMethod::tls())?;
+    let _ = ssl.set_alpn_protos(b"\x08http/1.1");
+    Ok(ssl.build())
+}
+
+pub struct HubClientBuilder {
+    hub_name: String,
+    /// Time between two successive pending queries
+    query_backoff: u64,
+    signalr_url: Url,
+    connection_url: Url,
+    restart_policy: RestartPolicy,
+    ssl_connector: Option<SslConnector>,
+    connection_query_builder: Option<Box<dyn Fn(&str) -> String>>,
+}
+
+impl HubClientBuilder {
+    pub fn with_hub_and_url(hub: &str, url: Url) -> Self {
+        let connection_url = url.join("connect").unwrap();
+        HubClientBuilder {
+            hub_name: hub.to_string(),
+            query_backoff: 20,
+            signalr_url: url,
+            connection_url,
+            restart_policy: RestartPolicy::Always,
+            ssl_connector: None,
+            connection_query_builder: None,
+        }
+    }
+
+    pub fn query_backoff(mut self, query_backoff: u64) -> Self {
+        self.query_backoff = query_backoff;
+        self
+    }
+
+    pub fn restart_policy(mut self, restart_policy: RestartPolicy) -> Self {
+        self.restart_policy = restart_policy;
+        self
+    }
+
+    pub fn ssl_connector(mut self, ssl_connector: SslConnector) -> Self {
+        self.ssl_connector = Some(ssl_connector);
+        self
+    }
+
+    pub fn connection_query_builder(mut self, connection_query_builder: Box<dyn Fn(&str) -> String>) -> Self {
+        self.connection_query_builder = Some(connection_query_builder);
+        self
+    }
+
+    async fn negotiate(&self, ssl: SslConnector) -> Result<(String, SignalrConnection)> {
+        let conn_data = serde_json::to_string(&vec![ConnectionData {
+            name: self.hub_name.clone(),
+        }])
+        .unwrap();
+        let mut negotiate_url = self.signalr_url.join("negotiate").unwrap();
+        let encoded: String = form_urlencoded::Serializer::new(String::new())
+            .append_pair("connectionData", conn_data.as_str())
+            .append_pair("clientProtocol", CLIENT_PROTOCOL)
+            .finish();
+        negotiate_url.set_query(Some(&encoded));
+
+        let connector = actix_http::client::Connector::new().ssl(ssl);
+        let client = Client::builder().connector(connector).finish();
+
+        let mut client_response = client.get(negotiate_url.to_string()).send().await?;
+
+        let body = client_response.body().await?;
+        let cookies = client_response.cookies()?;
+        let cookies_str: Vec<String> = cookies.iter().map(|c| c.to_string()).collect();
+        let cookie_str = cookies_str.join(";");
+        let signalr_conn: SignalrConnection = serde_json::from_slice(&body)?;
+
+        Ok((cookie_str, signalr_conn))
+    }
+
+    pub async fn start_supervised(mut self, handler: Box<dyn HubClientHandler>) -> Result<Addr<HubClient>> {
+        let connector = self
+            .ssl_connector
+            .clone()
+            .or_else(|| default_ssl_connector().ok())
+            .ok_or(HubClientError::NoSslConnector)?;
+        let (cookies, resp) = self.negotiate(connector.clone()).await?;
+        if !resp.TryWebSockets {
+            return Err(HubClientError::WsClientError(
+                "Websockets are not enabled for this SignalR server".to_string(),
+            ));
+        }
+        let encoded = if let Some(builder) = self.connection_query_builder {
+            (builder)(resp.ConnectionToken.as_str())
+        } else {
+            self.default_connection_query(resp.ConnectionToken.as_str())
+        };
+        self.connection_url.set_query(Some(&encoded));
+        HubClient::start_new(
+            self.hub_name.to_string(),
+            self.connection_url.clone(),
+            connector,
+            self.query_backoff,
+            self.restart_policy,
+            cookies,
+            handler,
+        )
+        .await
+    }
+
+    fn default_connection_query(&self, token: &str) -> String {
+        let conn_data = serde_json::to_string(&vec![ConnectionData {
+            name: self.hub_name.clone(),
+        }])
+        .unwrap();
+        form_urlencoded::Serializer::new(String::new())
+            .append_pair("connectionToken", token)
+            .append_pair("connectionData", conn_data.as_str())
+            .append_pair("clientProtocol", CLIENT_PROTOCOL)
+            .append_pair("transport", "webSockets")
+            .finish()
+    }
 }
 
 pub struct HubClient {
@@ -93,6 +226,7 @@ pub struct HubClient {
     conn_backoff: ExponentialBackoff,
     restart_policy: RestartPolicy,
     pub cookies: String,
+    connector: SslConnector,
 }
 
 impl Actor for HubClient {
@@ -113,14 +247,16 @@ struct ConnectionData {
     name: String,
 }
 
+#[allow(non_snake_case)]
 #[derive(Deserialize)]
 struct SignalrConnection {
     ConnectionToken: String,
     TryWebSockets: bool,
 }
 
+#[allow(non_snake_case)]
 #[derive(Serialize, Message)]
-#[rtype(result = "()")]
+#[rtype(result = "Result<()>")]
 pub struct HubQuery<T> {
     H: String,
     M: String,
@@ -149,58 +285,36 @@ where
 const CLIENT_PROTOCOL: &str = "1.5";
 
 impl HubClient {
+    #[allow(dead_code)]
     fn connected(&mut self) {}
 
-    async fn negotiate(url: &mut Url, hub: &str) -> Result<(String, SignalrConnection), HubClientError> {
-        let conn_data = serde_json::to_string(&vec![ConnectionData { name: hub.to_string() }]).unwrap();
-        let encoded: String = form_urlencoded::Serializer::new(String::new())
-            .append_pair("connectionData", conn_data.as_str())
-            .append_pair("clientProtocol", CLIENT_PROTOCOL)
-            .finish();
-        let mut negotiate_url = url.join("negotiate").unwrap();
-        negotiate_url.set_query(Some(&encoded));
-
-        let ssl = {
-            let ssl = openssl::ssl::SslConnector::builder(openssl::ssl::SslMethod::tls()).unwrap();
-            ssl.build()
-        };
-        let connector = actix_http::client::Connector::new().ssl(ssl);
-        let client = Client::builder().connector(connector).finish();
-        let mut result = client.get(negotiate_url.clone().into_string()).send().await?;
-        let bytes = result.body().await?;
-        let cookies = result.cookies()?;
-        let cookies_str: Vec<String> = cookies.clone().into_iter().map(|c| c.to_string()).collect();
-        let cookie_str = cookies_str.join(";");
-        let resp: SignalrConnection = serde_json::from_slice(&bytes)?;
-        Ok((cookie_str, resp))
-    }
-
-    pub async fn new(
-        hub: &'static str,
-        wss_url: &str,
+    pub fn new(
+        hub: &str,
+        signalr_url: &str,
         query_backoff: u64,
         restart_policy: RestartPolicy,
         handler: Box<dyn HubClientHandler>,
-    ) -> Result<Addr<HubClient>, HubClientError> {
-        let signalr_url: &mut Url = &mut Url::parse(wss_url).unwrap();
-        let (cookies, resp) = HubClient::negotiate(signalr_url, hub).await?;
-        if !resp.TryWebSockets {
-            return Err(HubClientError::WsClientError(
-                "Websockets are not enabled for this SignalR server".to_string(),
-            ));
-        }
-        let conn_data = serde_json::to_string(&vec![ConnectionData { name: hub.to_string() }]).unwrap();
-        let encoded: String = form_urlencoded::Serializer::new(String::new())
-            .append_pair("connectionToken", resp.ConnectionToken.as_str())
-            .append_pair("connectionData", conn_data.as_str())
-            .append_pair("clientProtocol", CLIENT_PROTOCOL)
-            .append_pair("transport", "webSockets")
-            .finish();
-        let mut connection_url: Url = signalr_url.join("connect").unwrap();
-        connection_url.set_query(Some(&encoded));
-        let mut conn_backoff = ExponentialBackoff::default();
-        conn_backoff.max_elapsed_time = None;
-        let c = new_ws_client(connection_url.to_string(), cookies.clone()).await?;
+    ) -> impl Future<Output = Result<Addr<HubClient>>> {
+        HubClientBuilder::with_hub_and_url(hub, Url::parse(signalr_url).unwrap())
+            .restart_policy(restart_policy)
+            .query_backoff(query_backoff)
+            .start_supervised(handler)
+    }
+
+    pub async fn start_new(
+        hub: String,
+        connection_url: Url,
+        ssl: SslConnector,
+        query_backoff: u64,
+        restart_policy: RestartPolicy,
+        cookies: String,
+        handler: Box<dyn HubClientHandler>,
+    ) -> Result<Addr<HubClient>> {
+        let conn_backoff = ExponentialBackoff {
+            max_elapsed_time: None,
+            ..ExponentialBackoff::default()
+        };
+        let c = new_ws_client(ssl.clone(), connection_url.to_string(), cookies.clone()).await?;
         let (sink, stream) = c.split();
         Ok(Supervisor::start(move |ctx| {
             HubClient::add_stream(stream, ctx);
@@ -215,13 +329,14 @@ impl HubClient {
                 hb: Instant::now(),
                 pending_queries: VecDeque::new(),
                 restart_policy,
+                connector: ssl,
                 cookies,
             }
         }))
     }
 
-    fn handle_bytes(&mut self, ctx: &mut Context<Self>, bytes: Bytes) -> Result<(), HubClientError> {
-        let msg: Map<String, Value> = serde_json::from_slice(bytes.as_ref()).unwrap();
+    fn handle_bytes(&mut self, ctx: &mut Context<Self>, bytes: Bytes) -> Result<()> {
+        let msg: Map<String, Value> = serde_json::from_slice(bytes.as_ref())?;
         if msg.get("S").is_some() {
             self.connected = true;
             let queries: Vec<Box<dyn PendingQuery>> = self.handler.on_connect();
@@ -229,21 +344,15 @@ impl HubClient {
                 self.pending_queries.push_back(query);
             }
             let mut backoff = self.query_backoff;
-            loop {
-                match self.pending_queries.pop_back() {
-                    None => break,
-                    Some(pq) => {
-                        let query = pq.query().clone();
-                        ctx.run_later(Duration::from_millis(backoff), |act, _ctx| {
-                            match act.inner.write(Message::Text(query.into())) {
-                                Ok(_) => trace!("Wrote query"),
-                                Err(_) => trace!("Tried to write in a closing/closed sink"),
-                            }
-                        });
-                        backoff += self.query_backoff;
+            self.pending_queries.iter().for_each(|pq| {
+                let query = pq.query();
+                ctx.run_later(Duration::from_millis(backoff), |act, _ctx| {
+                    if act.inner.write(Message::Text(query.into())).is_err() {
+                        trace!("Tried to write pending query in closed sink");
                     }
-                }
-            }
+                });
+                backoff += self.query_backoff;
+            });
             return Ok(());
         }
         let id = msg.get("I").and_then(|i| i.as_str());
@@ -273,32 +382,32 @@ impl HubClient {
 
         let m = msg.get("M");
         match m {
-            Some(Value::Array(data)) => data
-                .into_iter()
-                .map(|inner_data| {
-                    let hub: Option<&Value> = inner_data.get("H");
-                    match hub {
-                        Some(Value::String(hub_name)) if hub_name.to_lowercase() == self.name => {
-                            let m: Option<&Value> = inner_data.get("M");
-                            let a: Option<&Value> = inner_data.get("A");
-                            match (m, a) {
-                                (Some(Value::String(method)), Some(v)) => Ok(self.handler.handle(method, v)),
-                                _ => {
-                                    let m_str = serde_json::to_string(&m)?;
-                                    let a_str = serde_json::to_string(&a)?;
-                                    Err(HubClientError::InvalidData {
-                                        data: vec![m_str, a_str],
-                                    })
-                                }
+            Some(Value::Array(data)) => data.iter().try_for_each(|inner_data| {
+                let hub: Option<&Value> = inner_data.get("H");
+                match hub {
+                    Some(Value::String(hub_name)) if hub_name.to_lowercase() == self.name => {
+                        let m: Option<&Value> = inner_data.get("M");
+                        let a: Option<&Value> = inner_data.get("A");
+                        match (m, a) {
+                            (Some(Value::String(method)), Some(v)) => {
+                                self.handler.handle(method, v);
+                                Ok(())
+                            }
+                            _ => {
+                                let m_str = serde_json::to_string(&m)?;
+                                let a_str = serde_json::to_string(&a)?;
+                                Err(HubClientError::InvalidData {
+                                    data: vec![m_str, a_str],
+                                })
                             }
                         }
-                        _ => {
-                            let hub_str = serde_json::to_string(&hub)?;
-                            Err(HubClientError::InvalidData { data: vec![hub_str] })
-                        }
                     }
-                })
-                .collect(),
+                    _ => {
+                        let hub_str = serde_json::to_string(&hub)?;
+                        Err(HubClientError::InvalidData { data: vec![hub_str] })
+                    }
+                }
+            }),
             _ => Ok(()),
         }
     }
@@ -312,9 +421,11 @@ impl actix::Supervised for HubClient {
             ctx.stop();
             return;
         }
-        let conn_str = self.connection_url.to_string().clone();
-        let cookies = self.cookies.clone();
-        let client1 = new_ws_client(conn_str, cookies);
+        let client1 = new_ws_client(
+            self.connector.clone(),
+            self.connection_url.to_string(),
+            self.cookies.clone(),
+        );
         client1
             .into_actor(self)
             .map(|res, act, ctx| match res {
@@ -338,18 +449,19 @@ impl actix::Supervised for HubClient {
     }
 }
 
-impl StreamHandler<Result<Frame, WsProtocolError>> for HubClient {
-    fn handle(&mut self, msg: Result<Frame, WsProtocolError>, ctx: &mut Context<Self>) {
+impl StreamHandler<std::result::Result<Frame, WsProtocolError>> for HubClient {
+    fn handle(&mut self, msg: std::result::Result<Frame, WsProtocolError>, ctx: &mut Context<Self>) {
         match msg {
             Ok(Frame::Ping(msg)) => {
                 self.hb = Instant::now();
-                self.inner.write(Message::Pong(Bytes::copy_from_slice(&msg)));
+                if self.inner.write(Message::Pong(Bytes::copy_from_slice(&msg))).is_err() {
+                    trace!("failed to write back pong");
+                }
             }
-            Ok(Frame::Text(txt)) => {
-                self.handle_bytes(ctx, txt);
-            }
-            Ok(Frame::Binary(b)) => {
-                self.handle_bytes(ctx, b);
+            Ok(Frame::Text(b)) | Ok(Frame::Binary(b)) => {
+                if self.handle_bytes(ctx, b).is_err() {
+                    trace!("failed to handle bytes");
+                }
             }
             _ => (),
         }
@@ -360,14 +472,17 @@ impl<'de, T> Handler<HubQuery<T>> for HubClient
 where
     T: Deserialize<'de> + Serialize + 'static,
 {
-    type Result = ();
+    type Result = Result<()>;
 
     fn handle(&mut self, msg: HubQuery<T>, _ctx: &mut Self::Context) -> Self::Result {
         if !self.connected {
             self.pending_queries.push_back(Box::new(msg));
+            Ok(())
         } else {
             let result = serde_json::to_string(&msg).unwrap();
-            self.inner.write(Message::Text(result.into()));
+            self.inner
+                .write(Message::Text(result.into()))
+                .map_err(|_| HubClientError::ClosedSink)
         }
     }
 }
@@ -385,13 +500,8 @@ pub trait HubClientHandler {
     fn handle(&mut self, method: &str, message: &Value);
 }
 
-pub async fn new_ws_client(url: String, cookie: String) -> Result<Framed<BoxedSocket, Codec>, WsClientError> {
-    let ssl = {
-        let mut ssl = openssl::ssl::SslConnector::builder(openssl::ssl::SslMethod::tls()).unwrap();
-        let _ = ssl.set_alpn_protos(b"\x08http/1.1");
-        ssl.build()
-    };
-    let connector = awc::Connector::new().ssl(ssl);
+pub async fn new_ws_client(connector: SslConnector, url: String, cookie: String) -> Result<Framed<BoxedSocket, Codec>> {
+    let connector = awc::Connector::new().ssl(connector);
     let client = Client::builder().header("Cookie", cookie).connector(connector).finish();
 
     let (_response, framed) = client.ws(url).connect().await?;
