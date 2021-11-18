@@ -1,6 +1,6 @@
 [package]
 name = "signalr_rs"
-version = "0.2.0"
+version = "0.2.1"
 authors = ["Guillaume Balaine <igosuki@gmail.com>"]
 edition = "2018"
 description = "SignalR client based on actix web client and async await"
@@ -20,8 +20,8 @@ default = ["zstd"]
 zstd = ["actix-web/compress-zstd", "awc/compress-zstd"]
 
 [dependencies]
-actix-web = { version = "4.0.0-beta.6", features = ["openssl", "compress-brotli", "compress-gzip", "cookies"], default-features = false }
-awc = { version = "3.0.0-beta.7", features = ["openssl", "compress-brotli", "compress-gzip", "cookies"], default-features = false }
+actix-web = { version = "4.0.0-beta.11", features = ["openssl", "compress-brotli", "compress-gzip", "cookies"], default-features = false }
+awc = { version = "3.0.0-beta.10", features = ["openssl", "compress-brotli", "compress-gzip", "cookies"], default-features = false }
 actix = "0.12"
 actix-http = "3.0.0-beta.6"
 serde_json = "1.0"

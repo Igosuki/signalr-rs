@@ -155,7 +155,7 @@ impl HubClientBuilder {
             .finish();
         negotiate_url.set_query(Some(&encoded));
 
-        let connector = actix_http::client::Connector::new().ssl(ssl);
+        let connector = awc::Connector::new().ssl(ssl);
         let client = Client::builder().connector(connector).finish();
 
         let mut client_response = client.get(negotiate_url.to_string()).send().await?;
