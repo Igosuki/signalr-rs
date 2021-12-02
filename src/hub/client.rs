@@ -50,6 +50,8 @@ pub enum HubClientError {
     NoSslConnector,
     #[error("failed to create ssl connector")]
     SslError(#[from] ErrorStack),
+    #[error("error when decoding {0} : {1}")]
+    DecodeError(String, serde_json::Error),
 }
 
 impl From<DecodeError> for HubClientError {
@@ -164,7 +166,8 @@ impl HubClientBuilder {
         let cookies = client_response.cookies()?;
         let cookies_str: Vec<String> = cookies.iter().map(|c| c.to_string()).collect();
         let cookie_str = cookies_str.join(";");
-        let signalr_conn: SignalrConnection = serde_json::from_slice(&body)?;
+        let signalr_conn: SignalrConnection = serde_json::from_slice(&body)
+            .map_err(|e| HubClientError::DecodeError("SignalrConnection".to_string(), e))?;
 
         Ok((cookie_str, signalr_conn))
     }
@@ -336,7 +339,8 @@ impl HubClient {
     }
 
     fn handle_bytes(&mut self, ctx: &mut Context<Self>, bytes: Bytes) -> Result<()> {
-        let msg: Map<String, Value> = serde_json::from_slice(bytes.as_ref())?;
+        let msg: Map<String, Value> = serde_json::from_slice(bytes.as_ref())
+            .map_err(|e| HubClientError::DecodeError("Message".to_string(), e))?;
         if msg.get("S").is_some() {
             self.connected = true;
             let queries: Vec<Box<dyn PendingQuery>> = self.handler.on_connect();
