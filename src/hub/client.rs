@@ -159,7 +159,7 @@ impl HubClientBuilder {
 
         let connector = awc::Connector::new().ssl(ssl);
         let client = Client::builder().connector(connector).finish();
-
+        trace!("negogiate_url {}", negotiate_url);
         let mut client_response = client.get(negotiate_url.to_string()).send().await?;
 
         let body = client_response.body().await?;
