@@ -1,4 +1,3 @@
-extern crate serde_derive;
 #[macro_use]
 extern crate actix;
 #[macro_use]

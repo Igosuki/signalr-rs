@@ -157,7 +157,7 @@ impl HubClientBuilder {
             .finish();
         negotiate_url.set_query(Some(&encoded));
 
-        let connector = awc::Connector::new().ssl(ssl);
+        let connector = awc::Connector::new().openssl(ssl);
         let client = Client::builder().connector(connector).finish();
         trace!("negogiate_url {}", negotiate_url);
         let mut client_response = client.get(negotiate_url.to_string()).send().await?;
@@ -505,8 +505,11 @@ pub trait HubClientHandler {
 }
 
 pub async fn new_ws_client(connector: SslConnector, url: String, cookie: String) -> Result<Framed<BoxedSocket, Codec>> {
-    let connector = awc::Connector::new().ssl(connector);
-    let client = Client::builder().header("Cookie", cookie).connector(connector).finish();
+    let connector = awc::Connector::new().openssl(connector);
+    let client = Client::builder()
+        .add_default_header(("Cookie", cookie))
+        .connector(connector)
+        .finish();
 
     let (_response, framed) = client.ws(url).connect().await?;
 

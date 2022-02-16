@@ -19,22 +19,19 @@ path = "examples/bittrex.rs"
 default = ["zstd"]
 zstd = ["actix-web/compress-zstd", "awc/compress-zstd"]
 no_trace_release = ["log/release_max_level_debug"]
-rustls = ["actix-web/rustls", "awc/rustls"]
-native-tls = ["actix-web/openssl", "awc/openssl"]
 
 [dependencies]
-actix-web = { version = "4.0.0-rc", features = ["compress-brotli", "compress-gzip", "cookies"], default-features = false }
-awc = { version = "3.0.0-beta", features = ["compress-brotli", "compress-gzip", "cookies"], default-features = false }
+actix-web = { version = "4.0.0-rc", features = ["openssl", "compress-brotli", "compress-gzip", "cookies"], default-features = false }
+awc = { version = "3.0.0-beta", features = ["openssl", "compress-brotli", "compress-gzip", "cookies"], default-features = false }
 actix = "0.12"
 actix-http = "3.0.0-rc"
 serde_json = "1.0"
-serde = "1.0"
-serde_derive = "1.0"
+serde = { version = "1.0", features = ["derive"] }
 thiserror = "1.0"
 url = "2.2"
 actix-codec = "0.5"
 futures = "0.3"
-openssl = "0.10"
+openssl = { version = "0.10" }
 bytes = "1"
 derive_more = "0.99"
 base64 = "0.13"
